@@ -1,0 +1,142 @@
+<story-context id=".bmad/bmm/workflows/4-implementation/story-context/template" v="1.0">
+  <metadata>
+    <epicId>1</epicId>
+    <storyId>1</storyId>
+    <title>通过环境变量配置 OpenAI 协议 LLM 提供商</title>
+    <status>ready-for-dev</status>
+    <generatedAt>2025-11-26T23:04:00Z</generatedAt>
+    <generator>BMAD Story Context Workflow (simulated by SM agent)</generator>
+    <sourceStoryPath>docs/sprint-artifacts/1-1-configure-openai-llm-provider-via-env.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA>power user or DevOps engineer</asA>
+    <iWant>to configure the OpenAI-compatible LLM provider via environment variables (base_url, api_key, model, type)</iWant>
+    <soThat>I can switch between OpenRouter, OpenAI, and self-hosted OpenAI-compatible gateways without changing code</soThat>
+    <tasks>
+      - 任务 1：设计统一的 OpenAI 协议 LLM 配置层（梳理现有 LLM 相关 env、定义新变量结构、同时适配 live 与 backtest）
+      - 任务 2：实现 OpenAI Chat Completions 统一客户端抽象，内部处理 base_url / api_key / 模型与重试逻辑，对上只暴露统一调用接口
+      - 任务 3：在 bot.py 中接入统一客户端，替换现有直接绑死 OpenRouter 的调用，并保持/增强错误日志与降级行为
+      - 任务 4：更新 .env.example 与相关文档，补充 OpenRouter / OpenAI / 自建网关 三种典型配置示例
+      - 任务 5：在三种典型配置下做最小回归与回测，验证请求路由与数据写入行为符合期望
+    </tasks>
+  </story>
+
+  <acceptanceCriteria>
+    1. 正确设置 `LLM_API_BASE_URL`、`LLM_API_KEY`、`TRADEBOT_LLM_MODEL` 后，运行 bot 主循环若干轮：
+       - 所有 LLM 请求都发送到 `LLM_API_BASE_URL` 所指向的 OpenAI 协议兼容端点；
+       - 返回结果能被正确解析为 JSON，并写入 `ai_decisions.csv` 与 `ai_messages.csv`；
+       - 不需要修改任何调用 LLM 的业务代码，调用方只依赖统一客户端接口。
+
+    2. 在以下三种场景间切换时，仅通过修改环境变量即可完成 LLM 提供商切换，无需改动源代码：
+       - 使用 OpenRouter 作为默认 LLM 入口；
+       - 使用官方 OpenAI 或其他公开的 OpenAI-compatible 服务；
+       - 使用本地或自建 OpenAI-compatible 网关（例如 `http://localhost:8000/v1`）。
+
+    3. 文档与配置示例已更新：
+       - `.env.example` 包含 OpenRouter / OpenAI / 自建网关 三种典型配置段落；
+       - README 或配置章节对上述环境变量的含义和用法有清晰说明，并与 PRD / 架构文档中的表述保持一致。
+  </acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+      <doc path="docs/epics.md" title="LLM-trader-test - Epic Breakdown" section="Story 1.1">
+        <snippet>
+          定义了 Epic 1「支持任意 OpenAI 协议兼容 LLM 提供商」，并给出 Story 1.1 的用户故事与验收标准草稿，强调通过环境变量配置 base_url / api_key / model 以在不同 LLM 提供商之间无代码切换。
+        </snippet>
+      </doc>
+      <doc path="docs/prd.md" title="DeepSeek Paper Trading Bot 产品需求文档" section="4.3 LLM 配置与 Prompt 管理">
+        <snippet>
+          描述了通过环境变量与 Prompt 文件控制 LLM 模型、采样参数与系统 Prompt 的机制，是本故事在产品视角下的来源，要求 LLM 可插拔且配置驱动。
+        </snippet>
+      </doc>
+      <doc path="docs/architecture/04-integrations.md" title="4. 外部依赖与集成点" section="OpenRouter + DeepSeek">
+        <snippet>
+          说明当前系统通过 OpenRouter 接入 DeepSeek 模型，并将 LLM 决策端点视作核心外部依赖之一，所有集成都通过环境变量配置，避免硬编码密钥与敏感信息。
+        </snippet>
+      </doc>
+      <doc path="docs/architecture/06-project-structure-and-mapping.md" title="6. 项目结构与源码树" section="PRD 功能块到架构组件映射">
+        <snippet>
+          将「LLM 配置与 Prompt 管理」映射到 bot.py 与 .env / Prompt 文件，说明 LLM 模型名与参数通过环境变量和配置集中管理，并由 bot.py 统一加载。
+        </snippet>
+      </doc>
+      <doc path="docs/architecture/07-implementation-patterns.md" title="7. 实现模式与一致性规则" section="配置与密钥 / 外部服务集成">
+        <snippet>
+          规定所有敏感配置必须通过 .env 或运行环境注入，外部服务调用需通过专门适配层封装，不得在业务代码中散落裸请求，这直接约束了统一 LLM 客户端的实现方式。
+        </snippet>
+      </doc>
+      <doc path=".env.example" title="示例环境变量文件" section="LLM Configuration">
+        <snippet>
+          展示了当前使用的 OPENROUTER_API_KEY 与 TRADEBOT_LLM_MODEL 等环境变量，为扩展到更通用的 LLM_API_BASE_URL / LLM_API_KEY 配置提供现有基线。
+        </snippet>
+      </doc>
+    </docs>
+
+    <code>
+      <codeArtifact path="bot.py" kind="llm-config" symbol="_load_llm_model_name / refresh_llm_configuration_from_env" lines="267-297">
+        <reason>
+          负责从 TRADEBOT_LLM_MODEL 及相关环境变量加载 LLM 模型名与采样参数，是将新配置层接入 bot 的首选位置，需要在保持向后兼容的前提下支持更通用的 LLM provider 配置。
+        </reason>
+      </codeArtifact>
+      <codeArtifact path="bot.py" kind="llm-client" symbol="call_deepseek_api" lines="1499-1556">
+        <reason>
+          当前直接调用 https://openrouter.ai/api/v1/chat/completions，并使用 OPENROUTER_API_KEY 构造请求头，是本故事需要抽象为通用 OpenAI Chat Completions 客户端的起点。
+        </reason>
+      </codeArtifact>
+      <codeArtifact path="bot.py" kind="runtime-guard" symbol="main / OPENROUTER_API_KEY checks" lines="2413-2418">
+        <reason>
+          在启动时检查 OPENROUTER_API_KEY 并记录错误，需要更新为对新 LLM 配置层的检查，以避免将具体提供商耦合到错误消息与控制流中。
+        </reason>
+      </codeArtifact>
+      <codeArtifact path="backtest.py" kind="backtest-env-config" symbol="configure_environment" lines="424-446">
+        <reason>
+          为回测环境设置 TRADEBOT_LLM_MODEL、TRADEBOT_LLM_TEMPERATURE 等 env，并复用 bot 的 LLM 配置逻辑，确保故事实现兼容 backtest 配置覆盖路径。
+        </reason>
+      </codeArtifact>
+    </code>
+
+    <dependencies>
+      <dependency ecosystem="python" name="requests" version="2.31.0">
+        <reason>用于调用 OpenRouter / 未来任意 OpenAI-compatible HTTP 端点，是统一 LLM 客户端的基础 HTTP 库。</reason>
+      </dependency>
+      <dependency ecosystem="python" name="python-dotenv" version="1.0.0">
+        <reason>负责加载 .env 文件中的所有 LLM 与交易相关配置，是基于环境变量驱动的前提。</reason>
+      </dependency>
+      <dependency ecosystem="python" name="python-binance" version="1.0.19">
+        <reason>行情获取与回测数据源，Story 1.1 改变 LLM provider 时需要确保与行情子系统解耦。</reason>
+      </dependency>
+      <dependency ecosystem="python" name="hyperliquid-python-sdk" version=">=0.9.0">
+        <reason>实盘执行端依赖，本故事在切换 LLM provider 时不应影响该依赖的调用路径。</reason>
+      </dependency>
+    </dependencies>
+  </artifacts>
+
+  <constraints>
+    - 所有敏感配置（API Key、私钥等）必须通过 .env 或运行环境注入，禁止写入代码库；新增 LLM_API_KEY 等变量时须遵守这一原则。
+    - 外部服务调用（包括新的 OpenAI-compatible 端点）需通过统一适配层封装，而不是在业务逻辑中散落裸 HTTP 请求；bot.py 中现有的 call_deepseek_api 将被重构为面向接口的调用方。
+    - 统一客户端必须保持与现有 JSON 决策模式兼容，不得改变 bot 对 LLM 返回结构和字段的假设，以避免破坏 CSV/JSON 日志与回放能力。
+    - backtest.py 通过 BACKTEST_* 与 configure_environment 间接控制 LLM 配置，本故事在扩展配置时需要保证 live 与 backtest 路径行为一致，仅通过环境变量差异区分。
+  </constraints>
+
+  <interfaces>
+    <interface name="call_deepseek_api" kind="function" path="bot.py">
+      <signature>call_deepseek_api(prompt: str) -&gt; Dict[str, Any]</signature>
+      <description>现有的 LLM 调用入口，当前耦合到 OpenRouter DeepSeek Chat V3.1，将在本故事中改造为依赖统一 OpenAI-compatible 客户端的高层封装。</description>
+    </interface>
+  </interfaces>
+
+  <tests>
+    <standards>
+      - 遵循架构文档中关于「可观测性」与「错误处理」的约定：在 LLM 配置错误或 HTTP 失败时必须记录结构化日志，并保持主循环可继续运行。
+      - 新增或更新的测试应使用 pytest 风格，放置在推荐的 tests/ 目录下，并复用现有 CSV/JSON 输出以验证行为。
+    </standards>
+    <locations>
+      - tests/ 目录（未来引入自动化测试时的推荐位置）
+    </locations>
+    <ideas>
+      - AC#1：在不同 LLM_API_BASE_URL 与 LLM_API_KEY 组合下，使用测试 double 替代真实 HTTP 端点，验证请求 URL、头部与模型参数构造是否符合预期。
+      - AC#2：为 OpenRouter / 官方 OpenAI / 本地网关 三种场景分别编写集成级 smoke 测试，确认通过 .env 切换 provider 后，bot 仍然可以完成若干轮迭代并写入决策 CSV。
+      - AC#3：在配置缺失或无效时，验证 bot 记录清晰错误日志并拒绝下单，而不是静默失败或抛出未捕获异常。
+    </ideas>
+  </tests>
+</story-context>
