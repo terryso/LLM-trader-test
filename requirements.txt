@@ -9,3 +9,4 @@ hyperliquid-python-sdk>=0.9.0
 eth-account>=0.10.0
 ccxt
 streamlit-autorefresh
+cryptography

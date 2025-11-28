@@ -115,6 +115,14 @@ TELEGRAM_SIGNALS_CHAT_ID = os.getenv("TELEGRAM_SIGNALS_CHAT_ID", "")
 HYPERLIQUID_WALLET_ADDRESS = os.getenv("HYPERLIQUID_WALLET_ADDRESS", "")
 HYPERLIQUID_PRIVATE_KEY = os.getenv("HYPERLIQUID_PRIVATE_KEY", "")
 
+BACKPACK_API_PUBLIC_KEY = os.getenv("BACKPACK_API_PUBLIC_KEY", "")
+BACKPACK_API_SECRET_SEED = os.getenv("BACKPACK_API_SECRET_SEED", "")
+BACKPACK_API_BASE_URL = os.getenv("BACKPACK_API_BASE_URL", "https://api.backpack.exchange")
+BACKPACK_API_WINDOW_MS = _parse_int_env(
+    os.getenv("BACKPACK_API_WINDOW_MS"),
+    default=5000,
+)
+
 PAPER_START_CAPITAL = _parse_float_env(
     os.getenv("PAPER_START_CAPITAL"),
     default=10000.0,
@@ -129,7 +137,7 @@ if _TRADING_BACKEND_RAW:
     TRADING_BACKEND = _TRADING_BACKEND_RAW.strip().lower() or "paper"
 else:
     TRADING_BACKEND = "paper"
-if TRADING_BACKEND not in {"paper", "hyperliquid", "binance_futures"}:
+if TRADING_BACKEND not in {"paper", "hyperliquid", "binance_futures", "backpack_futures"}:
     EARLY_ENV_WARNINGS.append(
         f"Unsupported TRADING_BACKEND '{_TRADING_BACKEND_RAW}'; using 'paper'."
     )
@@ -156,6 +164,12 @@ else:
         os.getenv("BINANCE_FUTURES_LIVE"),
         default=False,
     )
+
+if LIVE_TRADING_ENABLED is not None:
+    BACKPACK_FUTURES_LIVE = bool(LIVE_TRADING_ENABLED and TRADING_BACKEND == "backpack_futures")
+else:
+    BACKPACK_FUTURES_LIVE = False
+
 BINANCE_FUTURES_MAX_RISK_USD = _parse_float_env(
     os.getenv("BINANCE_FUTURES_MAX_RISK_USD"),
     default=100.0,
@@ -191,6 +205,7 @@ LIVE_MAX_MARGIN_USD = _parse_float_env(
 IS_LIVE_BACKEND = (
     (TRADING_BACKEND == "hyperliquid" and HYPERLIQUID_LIVE_TRADING)
     or (TRADING_BACKEND == "binance_futures" and BINANCE_FUTURES_LIVE)
+    or (TRADING_BACKEND == "backpack_futures" and BACKPACK_FUTURES_LIVE)
 )
 
 START_CAPITAL = LIVE_START_CAPITAL if IS_LIVE_BACKEND else PAPER_START_CAPITAL
@@ -2140,6 +2155,38 @@ def execute_entry(coin: str, decision: Dict[str, Any], current_price: float) -> 
             logging.error("%s: Binance futures live entry failed: %s", coin, joined_errors)
             return
         live_backend = entry_result.backend
+    elif TRADING_BACKEND == "backpack_futures" and BACKPACK_FUTURES_LIVE:
+        if not BACKPACK_API_PUBLIC_KEY or not BACKPACK_API_SECRET_SEED:
+            logging.error(
+                "Backpack futures live trading enabled but API keys are missing; aborting entry.",
+            )
+            return
+        try:
+            client = get_exchange_client(
+                "backpack_futures",
+                api_public_key=BACKPACK_API_PUBLIC_KEY,
+                api_secret_seed=BACKPACK_API_SECRET_SEED,
+                base_url=BACKPACK_API_BASE_URL,
+                window_ms=BACKPACK_API_WINDOW_MS,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logging.error("%s: Failed to construct BackpackFuturesExchangeClient: %s", coin, exc)
+            return
+        entry_result = client.place_entry(
+            coin=coin,
+            side=side,
+            size=quantity,
+            entry_price=current_price,
+            stop_loss_price=stop_loss_price,
+            take_profit_price=profit_target_price,
+            leverage=leverage,
+            liquidity=liquidity,
+        )
+        if not entry_result.success:
+            joined_errors = "; ".join(entry_result.errors) if entry_result.errors else str(entry_result.raw)
+            logging.error("%s: Backpack futures live entry failed: %s", coin, joined_errors)
+            return
+        live_backend = entry_result.backend
     elif hyperliquid_trader.is_live:
         try:
             client = get_exchange_client("hyperliquid", trader=hyperliquid_trader)
@@ -2365,6 +2412,33 @@ def execute_close(coin: str, decision: Dict[str, Any], current_price: float) -> 
         if not close_result.success:
             joined_errors = "; ".join(close_result.errors) if close_result.errors else str(close_result.raw)
             logging.error("%s: Binance futures live close failed; position remains open. %s", coin, joined_errors)
+            return
+    elif TRADING_BACKEND == "backpack_futures" and BACKPACK_FUTURES_LIVE:
+        if not BACKPACK_API_PUBLIC_KEY or not BACKPACK_API_SECRET_SEED:
+            logging.error(
+                "Backpack futures live trading enabled but API keys are missing; position remains open.",
+            )
+            return
+        try:
+            client = get_exchange_client(
+                "backpack_futures",
+                api_public_key=BACKPACK_API_PUBLIC_KEY,
+                api_secret_seed=BACKPACK_API_SECRET_SEED,
+                base_url=BACKPACK_API_BASE_URL,
+                window_ms=BACKPACK_API_WINDOW_MS,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logging.error("%s: Failed to construct BackpackFuturesExchangeClient for close: %s", coin, exc)
+            return
+        close_result = client.close_position(
+            coin=coin,
+            side=pos['side'],
+            size=pos['quantity'],
+            fallback_price=current_price,
+        )
+        if not close_result.success:
+            joined_errors = "; ".join(close_result.errors) if close_result.errors else str(close_result.raw)
+            logging.error("%s: Backpack futures live close failed; position remains open. %s", coin, joined_errors)
             return
     elif hyperliquid_trader.is_live:
         try:
@@ -2684,6 +2758,15 @@ def main() -> None:
         else:
             logging.warning(
                 "TRADING_BACKEND=binance_futures but BINANCE_FUTURES_LIVE is not true; running in paper mode only.",
+            )
+    if TRADING_BACKEND == "backpack_futures":
+        if BACKPACK_FUTURES_LIVE:
+            logging.warning(
+                "Backpack futures LIVE trading enabled; orders will be sent to Backpack USDC perpetual futures.",
+            )
+        else:
+            logging.warning(
+                "TRADING_BACKEND=backpack_futures but BACKPACK_FUTURES_LIVE is not true; running in paper mode only.",
             )
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         logging.info("Telegram notifications enabled (chat: %s).", TELEGRAM_CHAT_ID)
