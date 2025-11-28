@@ -145,6 +145,27 @@ class HyperliquidExchangeClient:
                 seen[item] = None
         return list(seen.keys())
 
+    @staticmethod
+    def _format_quantity(size: float) -> str:
+        """Format order quantity with a safe number of decimal places.
+
+        Backpack will reject orders when the quantity has too many decimal
+        places ("Quantity decimal too long"). To avoid this, we clamp the
+        decimal precision to 6 places and strip trailing zeros.
+        """
+
+        if size <= 0:
+            raise ValueError("Order quantity must be positive.")
+
+        # Format with fixed precision, then strip trailing zeros and dot.
+        qty_str = f"{size:.6f}"
+        qty_str = qty_str.rstrip("0").rstrip(".")
+        if not qty_str or qty_str == "0":
+            # Fallback to a minimal positive quantity; the exchange will
+            # enforce its own minimum size constraints.
+            qty_str = "0.000001"
+        return qty_str
+
     def _build_entry_result(self, raw: Dict[str, Any]) -> EntryResult:
         entry_payload = raw.get("entry_result")
         sl_payload = raw.get("stop_loss_result")
@@ -552,6 +573,26 @@ class BackpackFuturesExchangeClient:
         return list(seen.keys())
 
     @staticmethod
+    def _format_quantity(size: float) -> str:
+        """Format order quantity with a safe number of decimal places.
+
+        Backpack will reject orders when the quantity has too many decimal
+        places ("Quantity decimal too long"). From manual smoke tests, a
+        precision of 4 decimal places (e.g. 0.0003) is accepted. To avoid
+        rejections, we clamp the decimal precision to 4 places and strip
+        trailing zeros.
+        """
+
+        if size <= 0:
+            raise ValueError("Order quantity must be positive.")
+
+        qty_str = f"{size:.4f}"
+        qty_str = qty_str.rstrip("0").rstrip(".")
+        if not qty_str or qty_str == "0":
+            qty_str = "0.0001"
+        return qty_str
+
+    @staticmethod
     def _collect_order_errors(payload: Any, label: str) -> List[str]:
         if not isinstance(payload, dict):
             return []
@@ -625,11 +666,12 @@ class BackpackFuturesExchangeClient:
         symbol = self._coin_to_symbol(coin)
         side_normalized = (side or "").lower()
         order_side = "Bid" if side_normalized == "long" else "Ask"
+        quantity_str = self._format_quantity(size)
         body: Dict[str, Any] = {
             "symbol": symbol,
             "side": order_side,
             "orderType": "Market",
-            "quantity": str(size),
+            "quantity": quantity_str,
             "reduceOnly": False,
         }
         raw = self._post_order(body)
@@ -678,11 +720,12 @@ class BackpackFuturesExchangeClient:
         symbol = self._coin_to_symbol(coin)
         side_normalized = (side or "").lower()
         order_side = "Ask" if side_normalized == "long" else "Bid"
+        quantity_str = self._format_quantity(quantity)
         body: Dict[str, Any] = {
             "symbol": symbol,
             "side": order_side,
             "orderType": "Market",
-            "quantity": str(quantity),
+            "quantity": quantity_str,
             "reduceOnly": True,
         }
         raw = self._post_order(body)
