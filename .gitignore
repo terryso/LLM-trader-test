@@ -10,3 +10,4 @@ backtest_results.json
 patreon/
 medium/
 data-backtest/
+.coverage
