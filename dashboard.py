@@ -569,7 +569,7 @@ def main() -> None:
     st.title("DeepSeek Trading Bot Monitor")
     st.caption(
         "Source code available at "
-        "[github.com/kojott/LLM-trader-test](https://github.com/kojott/LLM-trader-test)"
+        "[github.com/terryso/LLM-trader-test](https://github.com/terryso/LLM-trader-test)"
     )
 
     if st.button("🔄 Refresh Data"):
