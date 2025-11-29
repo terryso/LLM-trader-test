@@ -143,6 +143,17 @@ if TRADING_BACKEND not in {"paper", "hyperliquid", "binance_futures", "backpack_
     )
     TRADING_BACKEND = "paper"
 
+_MARKET_DATA_BACKEND_RAW = os.getenv("MARKET_DATA_BACKEND")
+if _MARKET_DATA_BACKEND_RAW:
+    MARKET_DATA_BACKEND = _MARKET_DATA_BACKEND_RAW.strip().lower() or "binance"
+else:
+    MARKET_DATA_BACKEND = "binance"
+if MARKET_DATA_BACKEND not in {"binance", "backpack"}:
+    EARLY_ENV_WARNINGS.append(
+        f"Unsupported MARKET_DATA_BACKEND '{_MARKET_DATA_BACKEND_RAW}'; using 'binance'."
+    )
+    MARKET_DATA_BACKEND = "binance"
+
 _LIVE_TRADING_ENV = os.getenv("LIVE_TRADING_ENABLED")
 if _LIVE_TRADING_ENV is not None:
     LIVE_TRADING_ENABLED = _parse_bool_env(_LIVE_TRADING_ENV, default=False)
@@ -211,7 +222,7 @@ IS_LIVE_BACKEND = (
 START_CAPITAL = LIVE_START_CAPITAL if IS_LIVE_BACKEND else PAPER_START_CAPITAL
 
 # Trading symbols to monitor
-SYMBOLS = ["ETHUSDT", "SOLUSDT", "XRPUSDT", "BTCUSDT", "DOGEUSDT", "BNBUSDT", "PAXGUSDT", "PUMPUSDT"]
+SYMBOLS = ["ETHUSDT", "SOLUSDT", "XRPUSDT", "BTCUSDT", "DOGEUSDT", "BNBUSDT", "PAXGUSDT", "PUMPUSDT", "MONUSDT", "HYPEUSDT"]
 SYMBOL_TO_COIN = {
     "ETHUSDT": "ETH",
     "SOLUSDT": "SOL", 
@@ -220,7 +231,9 @@ SYMBOL_TO_COIN = {
     "DOGEUSDT": "DOGE",
     "BNBUSDT": "BNB",
     "PAXGUSDT": "PAXG",
-    "PUMPUSDT": "PUMP"
+    "PUMPUSDT": "PUMP",
+    "MONUSDT": "MON",
+    "HYPEUSDT": "HYPE",
 }
 COIN_TO_SYMBOL = {coin: symbol for symbol, coin in SYMBOL_TO_COIN.items()}
 
@@ -487,6 +500,7 @@ else:
     logging.error("No LLM API key configured; expected LLM_API_KEY or OPENROUTER_API_KEY in environment.")
 
 client: Optional[Client] = None
+_market_data_client: Optional[Any] = None
 
 try:
     hyperliquid_trader = HyperliquidTradingClient(
@@ -569,6 +583,210 @@ def get_binance_client() -> Optional[Client]:
         client = None
 
     return client
+
+class BinanceMarketDataClient:
+    def __init__(self, binance_client: Client) -> None:
+        self._client = binance_client
+
+    def get_klines(self, symbol: str, interval: str, limit: int) -> List[List[Any]]:
+        return self._client.get_klines(symbol=symbol, interval=interval, limit=limit)
+
+    def get_funding_rate_history(self, symbol: str, limit: int) -> List[float]:
+        try:
+            hist = self._client.futures_funding_rate(symbol=symbol, limit=limit)
+        except Exception as exc:
+            logging.debug("Funding rate history unavailable for %s: %s", symbol, exc)
+            return []
+        rates: List[float] = []
+        if hist:
+            for entry in hist:
+                if not isinstance(entry, dict):
+                    continue
+                value = entry.get("fundingRate")
+                try:
+                    rates.append(float(value))
+                except (TypeError, ValueError):
+                    continue
+        return rates
+
+    def get_open_interest_history(self, symbol: str, limit: int) -> List[float]:
+        try:
+            hist = self._client.futures_open_interest_hist(symbol=symbol, period="5m", limit=limit)
+        except Exception as exc:
+            logging.debug("Open interest history unavailable for %s: %s", symbol, exc)
+            return []
+        values: List[float] = []
+        if hist:
+            for entry in hist:
+                if not isinstance(entry, dict):
+                    continue
+                value = entry.get("sumOpenInterest")
+                try:
+                    values.append(float(value))
+                except (TypeError, ValueError):
+                    continue
+        return values
+
+class BackpackMarketDataClient:
+    def __init__(self, base_url: str) -> None:
+        base = (base_url or "https://api.backpack.exchange").strip()
+        if not base:
+            base = "https://api.backpack.exchange"
+        self._base_url = base.rstrip("/")
+        self._session = requests.Session()
+        self._timeout = 10.0
+
+    @staticmethod
+    def _normalize_symbol(symbol: str) -> str:
+        raw = (symbol or "").strip().upper()
+        if not raw:
+            return raw
+        # Already a Backpack-style symbol like BTC_USDC_PERP
+        if "_" in raw:
+            return raw
+        # Common case: Binance-style future/spot symbol like BTCUSDT
+        if raw.endswith("USDT") and len(raw) > 4:
+            base = raw[:-4]
+            return f"{base}_USDC_PERP"
+        return raw
+
+    def _get_mark_price_entry(self, symbol: str) -> Optional[Dict[str, Any]]:
+        normalized = self._normalize_symbol(symbol)
+        url = f"{self._base_url}/api/v1/markPrices"
+        params: Dict[str, Any] = {}
+        if normalized:
+            params["symbol"] = normalized
+        try:
+            response = self._session.get(url, params=params, timeout=self._timeout)
+            data = response.json()
+        except Exception as exc:
+            logging.debug("Backpack markPrices request failed for %s: %s", normalized or symbol, exc)
+            return None
+        if isinstance(data, dict):
+            return data
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and (not normalized or item.get("symbol") == normalized):
+                    return item
+        return None
+
+    def get_klines(self, symbol: str, interval: str, limit: int) -> List[List[Any]]:
+        normalized = self._normalize_symbol(symbol)
+        now_s = int(time.time())
+        seconds_per_bar = _INTERVAL_TO_SECONDS.get(interval, 60)
+        lookback_seconds = max(limit, 1) * seconds_per_bar
+        params: Dict[str, Any] = {
+            "symbol": normalized,
+            "interval": interval,
+            "startTime": now_s - lookback_seconds,
+        }
+        url = f"{self._base_url}/api/v1/klines"
+        try:
+            response = self._session.get(url, params=params, timeout=self._timeout)
+            data = response.json()
+        except Exception as exc:
+            logging.warning("Backpack klines request failed for %s: %s", symbol, exc)
+            return []
+        if response.status_code != 200:
+            logging.warning(
+                "Backpack klines HTTP %s for %s with params %s: %s",
+                response.status_code,
+                normalized,
+                params,
+                data,
+            )
+            return []
+        if not isinstance(data, list):
+            return []
+        rows: List[List[Any]] = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            start_val = item.get("start")
+            end_val = item.get("end")
+            open_val = item.get("open")
+            high_val = item.get("high")
+            low_val = item.get("low")
+            close_val = item.get("close")
+            volume_val = item.get("volume")
+            quote_volume = item.get("quoteVolume")
+            trades = item.get("trades")
+            row: List[Any] = [
+                start_val,
+                open_val,
+                high_val,
+                low_val,
+                close_val,
+                volume_val,
+                end_val,
+                quote_volume,
+                trades,
+                None,
+                None,
+                None,
+            ]
+            rows.append(row)
+        return rows
+
+    def get_funding_rate_history(self, symbol: str, limit: int) -> List[float]:
+        entry = self._get_mark_price_entry(symbol)
+        if not entry:
+            return []
+        value = entry.get("fundingRate")
+        try:
+            rate = float(value)
+        except (TypeError, ValueError):
+            return []
+        return [rate]
+
+    def get_open_interest_history(self, symbol: str, limit: int) -> List[float]:
+        normalized = self._normalize_symbol(symbol)
+        url = f"{self._base_url}/api/v1/openInterest"
+        params: Dict[str, Any] = {}
+        if normalized:
+            params["symbol"] = normalized
+        try:
+            response = self._session.get(url, params=params, timeout=self._timeout)
+            data = response.json()
+        except Exception as exc:
+            logging.debug("Backpack open interest request failed for %s: %s", symbol, exc)
+            return []
+        items: List[Any]
+        if isinstance(data, dict):
+            items = [data]
+        elif isinstance(data, list):
+            items = data
+        else:
+            items = []
+        values: List[float] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            value = item.get("openInterest")
+            try:
+                values.append(float(value))
+            except (TypeError, ValueError):
+                continue
+        if not values:
+            return []
+        return [values[-1]]
+
+def get_market_data_client() -> Optional[Any]:
+    global _market_data_client
+    if _market_data_client is not None:
+        return _market_data_client
+    backend = MARKET_DATA_BACKEND
+    logging.info("Initializing market data backend: %s", backend)
+    if backend == "binance":
+        binance_client = get_binance_client()
+        if not binance_client:
+            return None
+        _market_data_client = BinanceMarketDataClient(binance_client)
+        return _market_data_client
+    if backend == "backpack":
+        _market_data_client = BackpackMarketDataClient(BACKPACK_API_BASE_URL)
+        return _market_data_client
+    return None
 
 # ──────────────────────── GLOBAL STATE ─────────────────────
 balance: float = START_CAPITAL
@@ -1104,14 +1322,16 @@ def calculate_indicators(df: pd.DataFrame) -> pd.Series:
 
 def fetch_market_data(symbol: str) -> Optional[Dict[str, Any]]:
     """Fetch current market data for a symbol."""
-    binance_client = get_binance_client()
-    if not binance_client:
-        logging.warning("Skipping market data fetch for %s: Binance client unavailable.", symbol)
+    market_client = get_market_data_client()
+    if not market_client:
+        logging.warning("Skipping market data fetch for %s: market data client unavailable.", symbol)
         return None
 
     try:
-        # Get recent klines
-        klines = binance_client.get_klines(symbol=symbol, interval=INTERVAL, limit=50)
+        klines = market_client.get_klines(symbol=symbol, interval=INTERVAL, limit=50)
+        if not klines:
+            logging.warning("Skipping market data fetch for %s: no klines returned.", symbol)
+            return None
 
         df = pd.DataFrame(
             klines,
@@ -1142,12 +1362,8 @@ def fetch_market_data(symbol: str) -> Optional[Dict[str, Any]]:
         last_low = float(latest_bar["low"])
         last_close = float(latest_bar["close"])
 
-        # Get funding rate for perpetual futures
-        try:
-            funding_info = binance_client.futures_funding_rate(symbol=symbol, limit=1)
-            funding_rate = float(funding_info[0]["fundingRate"]) if funding_info else 0
-        except:
-            funding_rate = 0
+        funding_rates = market_client.get_funding_rate_history(symbol=symbol, limit=1)
+        funding_rate = float(funding_rates[-1]) if funding_rates else 0.0
 
         return {
             "symbol": symbol,
@@ -1184,12 +1400,12 @@ def round_series(values: Iterable[Any], precision: int) -> List[float]:
 
 def collect_prompt_market_data(symbol: str) -> Optional[Dict[str, Any]]:
     """Return rich market snapshot for prompt composition."""
-    binance_client = get_binance_client()
-    if not binance_client:
+    market_client = get_market_data_client()
+    if not market_client:
         return None
 
     try:
-        execution_klines = binance_client.get_klines(symbol=symbol, interval=INTERVAL, limit=200)
+        execution_klines = market_client.get_klines(symbol=symbol, interval=INTERVAL, limit=200)
         df_execution = pd.DataFrame(
             execution_klines,
             columns=[
@@ -1221,7 +1437,7 @@ def collect_prompt_market_data(symbol: str) -> Optional[Dict[str, Any]]:
             macd_params=(MACD_FAST, MACD_SLOW, MACD_SIGNAL),
         )
 
-        structure_klines = binance_client.get_klines(symbol=symbol, interval="1h", limit=100)
+        structure_klines = market_client.get_klines(symbol=symbol, interval="1h", limit=100)
         df_structure = pd.DataFrame(
             structure_klines,
             columns=[
@@ -1254,7 +1470,7 @@ def collect_prompt_market_data(symbol: str) -> Optional[Dict[str, Any]]:
         df_structure["volume_sma"] = df_structure["volume"].rolling(window=20).mean()
         df_structure["volume_ratio"] = df_structure["volume"] / df_structure["volume_sma"].replace(0, np.nan)
 
-        trend_klines = binance_client.get_klines(symbol=symbol, interval="4h", limit=100)
+        trend_klines = market_client.get_klines(symbol=symbol, interval="4h", limit=100)
         df_trend = pd.DataFrame(
             trend_klines,
             columns=[
@@ -1285,19 +1501,8 @@ def collect_prompt_market_data(symbol: str) -> Optional[Dict[str, Any]]:
         df_trend["macd_histogram"] = df_trend["macd"] - df_trend["macd_signal"]
         df_trend["atr"] = calculate_atr_series(df_trend, 14)
 
-        try:
-            oi_hist = binance_client.futures_open_interest_hist(symbol=symbol, period="5m", limit=30)
-            open_interest_values = [float(entry["sumOpenInterest"]) for entry in oi_hist]
-        except Exception as exc:
-            logging.debug("Open interest history unavailable for %s: %s", symbol, exc)
-            open_interest_values = []
-
-        try:
-            funding_hist = binance_client.futures_funding_rate(symbol=symbol, limit=30)
-            funding_rates = [float(entry["fundingRate"]) for entry in funding_hist]
-        except Exception as exc:
-            logging.debug("Funding rate history unavailable for %s: %s", symbol, exc)
-            funding_rates = []
+        open_interest_values = market_client.get_open_interest_history(symbol=symbol, limit=30)
+        funding_rates = market_client.get_funding_rate_history(symbol=symbol, limit=30)
 
         funding_latest = funding_rates[-1] if funding_rates else 0.0
         price = float(df_execution["close"].iloc[-1])
