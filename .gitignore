@@ -13,3 +13,4 @@ data-backtest/
 .coverage
 sync_surge.sh
 data/
+htmlcov/
