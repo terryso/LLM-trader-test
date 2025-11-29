@@ -145,6 +145,27 @@ class BackpackFuturesExchangeClientTests(unittest.TestCase):
         joined = " ".join(result.errors).lower()
         self.assertIn("insufficient margin", joined)
 
+    def test_close_position_reduce_only_not_reduced_treated_as_success(self) -> None:
+        raw_order = {
+            "status": "error",
+            "message": "Reduce only order not reduced",
+        }
+        client = _make_client()
+        client._post_order = lambda body, raw=raw_order: raw  # type: ignore[assignment]
+
+        result = client.close_position(
+            coin="ETH",
+            side="long",
+            size=1.0,
+            fallback_price=None,
+        )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.backend, "backpack_futures")
+        self.assertEqual(result.errors, [])
+        reason = str(result.extra.get("reason", "")).lower()
+        self.assertIn("position already closed on exchange", reason)
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

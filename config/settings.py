@@ -378,28 +378,15 @@ START_CAPITAL = _TRADING_CFG.start_capital
 
 # ───────────────────────── SYMBOLS ─────────────────────────
 SYMBOLS = [
-    "ETHUSDT",
-    "SOLUSDT",
-    "XRPUSDT",
-    "BTCUSDT",
-    # "DOGEUSDT",
-    "BNBUSDT",
-    # "PAXGUSDT",
-    # "PUMPUSDT",
-    "MONUSDT",
-    # "HYPEUSDT"
+    "ETHUSDT", "SOLUSDT", "XRPUSDT", "BTCUSDT", "BNBUSDT", "MONUSDT"
 ]
 SYMBOL_TO_COIN = {
     "ETHUSDT": "ETH",
     "SOLUSDT": "SOL",
     "XRPUSDT": "XRP",
     "BTCUSDT": "BTC",
-    # "DOGEUSDT": "DOGE",
     "BNBUSDT": "BNB",
-    # "PAXGUSDT": "PAXG",
-    # "PUMPUSDT": "PUMP",
     "MONUSDT": "MON",
-    # "HYPEUSDT": "HYPE",
 }
 COIN_TO_SYMBOL = {coin: symbol for symbol, coin in SYMBOL_TO_COIN.items()}
 
@@ -589,6 +576,4 @@ STATE_COLUMNS = [
     'total_margin',
     'net_unrealized_pnl',
     'btc_price',
-]
-
 ]

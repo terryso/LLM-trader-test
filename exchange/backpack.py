@@ -333,16 +333,31 @@ class BackpackFuturesExchangeClient:
             status_lower = status.lower()
             if status_lower in {"cancelled", "canceled", "rejected", "expired", "error"}:
                 success = False
+
+        reason: Optional[str] = None
+        message = raw.get("message") or raw.get("error")
+        if (
+            not success
+            and isinstance(message, str)
+            and "reduce only order not reduced" in message.lower()
+        ):
+            success = True
+            errors = []
+            reason = "position already closed on exchange (reduce-only order not reduced)"
+
         if not success and not errors:
             errors.append("Backpack futures close order was not accepted; see raw payload for details.")
+        extra: Dict[str, Any] = {
+            "order": raw,
+            "symbol": symbol,
+        }
+        if reason is not None:
+            extra["reason"] = reason
         return CloseResult(
             success=success,
             backend="backpack_futures",
             errors=self._deduplicate_errors(errors),
             close_oid=raw.get("id"),
             raw=raw,
-            extra={
-                "order": raw,
-                "symbol": symbol,
-            },
+            extra=extra,
         )
