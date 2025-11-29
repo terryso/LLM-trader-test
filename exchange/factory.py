@@ -24,7 +24,7 @@ from trading_config import (
     HYPERLIQUID_PRIVATE_KEY,
 )
 from hyperliquid_client import HyperliquidTradingClient
-from market_data import BinanceMarketDataClient, BackpackMarketDataClient
+from exchange.market_data import BinanceMarketDataClient, BackpackMarketDataClient
 from exchange.base import ExchangeClient
 from exchange.hyperliquid import HyperliquidExchangeClient
 from exchange.binance import BinanceFuturesExchangeClient

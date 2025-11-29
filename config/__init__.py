@@ -1,9 +1,4 @@
-"""
-Trading configuration and global constants.
-
-COMPATIBILITY LAYER: This module re-exports from config.settings.
-Please import from config.settings directly in new code.
-"""
+"""Configuration module for LLM-trader."""
 from config.settings import (
     # Path setup
     BASE_DIR,
@@ -45,7 +40,6 @@ from config.settings import (
     SYMBOL_TO_COIN,
     COIN_TO_SYMBOL,
     # System prompt
-    DEFAULT_TRADING_RULES_PROMPT,
     TRADING_RULES_PROMPT,
     SYSTEM_PROMPT_SOURCE,
     describe_system_prompt_source,
@@ -122,7 +116,6 @@ __all__ = [
     "SYMBOLS",
     "SYMBOL_TO_COIN",
     "COIN_TO_SYMBOL",
-    "DEFAULT_TRADING_RULES_PROMPT",
     "TRADING_RULES_PROMPT",
     "SYSTEM_PROMPT_SOURCE",
     "describe_system_prompt_source",

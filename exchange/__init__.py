@@ -9,6 +9,10 @@ from exchange.factory import (
     set_market_data_client,
     reset_clients,
 )
+from exchange.market_data import (
+    BinanceMarketDataClient,
+    BackpackMarketDataClient,
+)
 
 __all__ = [
     # Base types
@@ -23,4 +27,7 @@ __all__ = [
     "get_market_data_client",
     "set_market_data_client",
     "reset_clients",
+    # Market data clients
+    "BinanceMarketDataClient",
+    "BackpackMarketDataClient",
 ]

@@ -25,6 +25,7 @@ from colorama import Fore
 import requests
 
 # ───────────────────────── CONFIGURATION ─────────────────────────
+import config.settings as _config_settings
 import trading_config as _trading_config
 from trading_config import (
     LLM_API_KEY, LLM_MODEL_NAME, LLM_TEMPERATURE, LLM_MAX_TOKENS,
@@ -37,7 +38,6 @@ from trading_config import (
     log_system_prompt_info, BACKPACK_API_BASE_URL, MARKET_DATA_BACKEND,
     EMA_LEN, RSI_LEN, MACD_FAST, MACD_SLOW, MACD_SIGNAL,
     OPENROUTER_API_KEY, SYSTEM_PROMPT_SOURCE, describe_system_prompt_source,
-    refresh_llm_configuration_from_env as _refresh_llm_config,
     DEFAULT_TRADING_RULES_PROMPT,
 )
 from trading_config import (
@@ -50,19 +50,21 @@ def refresh_llm_configuration_from_env() -> None:
     """Reload LLM settings from environment."""
     global LLM_API_KEY, LLM_MODEL_NAME, LLM_TEMPERATURE, LLM_MAX_TOKENS
     global LLM_THINKING_PARAM, LLM_API_BASE_URL, LLM_API_TYPE
-    global TRADING_RULES_PROMPT, OPENROUTER_API_KEY
-    # Sync module-level OPENROUTER_API_KEY to trading_config before refresh
-    _trading_config.OPENROUTER_API_KEY = OPENROUTER_API_KEY
-    _refresh_llm_config()
-    LLM_API_KEY = _trading_config.LLM_API_KEY
-    LLM_MODEL_NAME = _trading_config.LLM_MODEL_NAME
-    LLM_TEMPERATURE = _trading_config.LLM_TEMPERATURE
-    LLM_MAX_TOKENS = _trading_config.LLM_MAX_TOKENS
-    LLM_THINKING_PARAM = _trading_config.LLM_THINKING_PARAM
-    LLM_API_BASE_URL = _trading_config.LLM_API_BASE_URL
-    LLM_API_TYPE = _trading_config.LLM_API_TYPE
-    TRADING_RULES_PROMPT = _trading_config.TRADING_RULES_PROMPT
-    OPENROUTER_API_KEY = _trading_config.OPENROUTER_API_KEY
+    global TRADING_RULES_PROMPT, OPENROUTER_API_KEY, SYSTEM_PROMPT_SOURCE
+    # Sync module-level OPENROUTER_API_KEY to config.settings before refresh
+    _config_settings.OPENROUTER_API_KEY = OPENROUTER_API_KEY
+    _config_settings.refresh_llm_configuration_from_env()
+    # Read updated values from config.settings
+    LLM_API_KEY = _config_settings.LLM_API_KEY
+    LLM_MODEL_NAME = _config_settings.LLM_MODEL_NAME
+    LLM_TEMPERATURE = _config_settings.LLM_TEMPERATURE
+    LLM_MAX_TOKENS = _config_settings.LLM_MAX_TOKENS
+    LLM_THINKING_PARAM = _config_settings.LLM_THINKING_PARAM
+    LLM_API_BASE_URL = _config_settings.LLM_API_BASE_URL
+    LLM_API_TYPE = _config_settings.LLM_API_TYPE
+    TRADING_RULES_PROMPT = _config_settings.TRADING_RULES_PROMPT
+    OPENROUTER_API_KEY = _config_settings.OPENROUTER_API_KEY
+    SYSTEM_PROMPT_SOURCE = _config_settings.SYSTEM_PROMPT_SOURCE
 
 # ───────────────────────── STATE MANAGEMENT ─────────────────────────
 import trading_state
@@ -120,9 +122,34 @@ from trading_loop import (
 from prompt_builder import (
     fetch_market_data as _fetch_market_data,
     format_prompt_for_deepseek as _format_prompt,
+    collect_prompt_market_data as _collect_prompt_market_data,
 )
-from llm_client import _recover_partial_decisions, _log_llm_decisions
-from llm.parser import parse_llm_json_decisions
+from llm.client import call_deepseek_api
+from llm.parser import parse_llm_json_decisions, recover_partial_decisions
+
+# For test compatibility - expose internal helpers
+from llm.client import _recover_partial_decisions, _log_llm_decisions
+
+
+def collect_prompt_market_data(symbol: str):
+    """Wrapper for test compatibility - uses get_market_data_client."""
+    return _collect_prompt_market_data(symbol, get_market_data_client)
+
+# Interval mapping for test compatibility
+_INTERVAL_TO_SECONDS = {
+    "1m": 60,
+    "3m": 180,
+    "5m": 300,
+    "15m": 900,
+    "30m": 1800,
+    "1h": 3600,
+    "2h": 7200,
+    "4h": 14400,
+    "6h": 21600,
+    "8h": 28800,
+    "12h": 43200,
+    "1d": 86400,
+}
 
 # ───────────────────────── EXECUTION ─────────────────────────
 from execution.executor import TradeExecutor
@@ -329,9 +356,9 @@ def process_ai_decisions(decisions: Dict[str, Any]) -> None:
         
         price = data["price"]
         if signal == "entry":
-            executor.execute_entry(coin, decision, price)
+            execute_entry(coin, decision, price)
         elif signal == "close":
-            executor.execute_close(coin, decision, price)
+            execute_close(coin, decision, price)
         elif signal == "hold":
             executor.process_hold_signal(coin, decision, price)
 

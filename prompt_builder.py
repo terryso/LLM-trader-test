@@ -17,6 +17,11 @@ from trading_config import (
     SYMBOL_TO_COIN,
     INTERVAL,
     START_CAPITAL,
+    EMA_LEN,
+    RSI_LEN,
+    MACD_FAST,
+    MACD_SLOW,
+    MACD_SIGNAL,
 )
 from strategy.snapshot import build_market_snapshot as _strategy_build_market_snapshot
 from llm.prompt import build_trading_prompt as _strategy_build_trading_prompt
@@ -56,7 +61,7 @@ def fetch_market_data(
         df["low"] = df["low"].astype(float)
         df["open"] = df["open"].astype(float)
 
-        last = calculate_indicators(df)
+        last = calculate_indicators(df, EMA_LEN, RSI_LEN, MACD_FAST, MACD_SLOW, MACD_SIGNAL)
         latest_bar = df.iloc[-1]
 
         funding_rates = market_client.get_funding_rate_history(symbol=symbol, limit=1)

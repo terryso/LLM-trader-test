@@ -1,11 +1,6 @@
-"""
-Trading state management.
-
-COMPATIBILITY LAYER: This module re-exports from core.state.
-Please import from core.state directly in new code.
-"""
+"""Core business logic module for LLM-trader."""
 from core.state import (
-    # Global state variables
+    # Global state
     balance,
     positions,
     trade_history,
@@ -14,7 +9,6 @@ from core.state import (
     equity_history,
     current_iteration_messages,
     last_btc_price,
-    ANSI_ESCAPE_RE,
     # Time provider
     get_current_time,
     set_time_provider,
@@ -45,8 +39,27 @@ from core.state import (
     strip_ansi_codes,
     escape_markdown,
 )
+from core.persistence import (
+    load_equity_history_from_csv,
+    init_csv_files_for_paths,
+    save_state_to_json,
+    load_state_from_json,
+    append_portfolio_state_row,
+    append_trade_row,
+)
+from core.metrics import (
+    DEFAULT_RISK_FREE_RATE,
+    calculate_sortino_ratio,
+    calculate_pnl_for_price,
+    calculate_unrealized_pnl_for_position,
+    calculate_net_unrealized_pnl_for_position,
+    estimate_exit_fee_for_position,
+    calculate_total_margin_for_positions,
+    format_leverage_display,
+)
 
 __all__ = [
+    # State
     "balance",
     "positions",
     "trade_history",
@@ -55,7 +68,6 @@ __all__ = [
     "equity_history",
     "current_iteration_messages",
     "last_btc_price",
-    "ANSI_ESCAPE_RE",
     "get_current_time",
     "set_time_provider",
     "BOT_START_TIME",
@@ -82,4 +94,20 @@ __all__ = [
     "get_last_btc_price",
     "strip_ansi_codes",
     "escape_markdown",
+    # Persistence
+    "load_equity_history_from_csv",
+    "init_csv_files_for_paths",
+    "save_state_to_json",
+    "load_state_from_json",
+    "append_portfolio_state_row",
+    "append_trade_row",
+    # Metrics
+    "DEFAULT_RISK_FREE_RATE",
+    "calculate_sortino_ratio",
+    "calculate_pnl_for_price",
+    "calculate_unrealized_pnl_for_position",
+    "calculate_net_unrealized_pnl_for_position",
+    "estimate_exit_fee_for_position",
+    "calculate_total_margin_for_positions",
+    "format_leverage_display",
 ]
