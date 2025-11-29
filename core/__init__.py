@@ -57,6 +57,7 @@ from core.metrics import (
     calculate_total_margin_for_positions,
     format_leverage_display,
 )
+from core.risk_control import RiskControlState
 
 __all__ = [
     # State
@@ -110,4 +111,6 @@ __all__ = [
     "estimate_exit_fee_for_position",
     "calculate_total_margin_for_positions",
     "format_leverage_display",
+    # Risk Control
+    "RiskControlState",
 ]

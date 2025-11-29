@@ -1,4 +1,4 @@
-# generated: 2025-11-26
+# generated: 2025-11-30
 # project: LLM-trader-test
 # project_key: LLM-trader-test
 # tracking_system: file-system
@@ -29,20 +29,57 @@
 # - SM typically drafts next story after previous one is 'done' to incorporate learnings
 # - Dev moves story to 'review', SM reviews, then Dev moves to 'done'
 
-generated: 2025-11-26
+generated: 2025-11-30
 project: LLM-trader-test
 project_key: LLM-trader-test
 tracking_system: file-system
 story_location: "/Users/nick/CascadeProjects/LLM-trader-test/docs/sprint-artifacts"
 
 development_status:
+  # === Epic 1: 支持任意 OpenAI 协议兼容 LLM 提供商 ===
   epic-1: backlog
   1-1-configure-openai-llm-provider-via-env: done
   epic-1-retrospective: optional
+
+  # === Epic 6: 统一交易所执行层 & 多交易所可插拔支持 ===
   epic-6: backlog
   6-1-定义-exchangeclient-抽象接口与统一结果结构: done
-  6-2-为-hyperliquid-提供-exchangeclient-适配器: in-progress
+  6-2-为-hyperliquid-提供-exchangeclient-适配器: done
   6-3-为-binance-futures-提供-exchangeclient-适配器: done
   6-4-将-execute-entry-execute-close-重构为使用-exchangeclient: done
   6-5-统一配置语义并为未来交易所留扩展点: done
   epic-6-retrospective: optional
+
+  # === Epic 7.1: 风控状态管理基础设施 ===
+  epic-7-1: contexted
+  7-1-1-定义-riskcontrolstate-数据结构: done
+  7-1-2-添加风控相关环境变量: backlog
+  7-1-3-实现风控状态持久化: backlog
+  7-1-4-集成风控状态到主循环: backlog
+  epic-7-1-retrospective: optional
+
+  # === Epic 7.2: Kill-Switch 核心功能 ===
+  epic-7-2: backlog
+  7-2-1-实现-kill-switch-激活逻辑: backlog
+  7-2-2-实现-kill-switch-解除逻辑: backlog
+  7-2-3-实现信号过滤逻辑: backlog
+  7-2-4-确保-sl-tp-在-kill-switch-期间正常工作: backlog
+  7-2-5-实现-kill-switch-状态变更通知: backlog
+  epic-7-2-retrospective: optional
+
+  # === Epic 7.3: 每日亏损限制功能 ===
+  epic-7-3: backlog
+  7-3-1-实现每日起始权益记录: backlog
+  7-3-2-实现每日亏损百分比计算: backlog
+  7-3-3-实现每日亏损阈值触发: backlog
+  7-3-4-实现每日亏损限制通知: backlog
+  epic-7-3-retrospective: optional
+
+  # === Epic 7.4: Telegram 命令集成 ===
+  epic-7-4: backlog
+  7-4-1-实现-telegram-命令接收机制: backlog
+  7-4-2-实现-kill-和-resume-命令: backlog
+  7-4-3-实现-status-命令: backlog
+  7-4-4-实现-reset-daily-命令: backlog
+  7-4-5-实现-help-命令和安全校验: backlog
+  epic-7-4-retrospective: optional
