@@ -1,0 +1,166 @@
+<story-context id=".bmad/bmm/workflows/4-implementation/story-context/template" v="1.0">
+  <metadata>
+    <epicId>7-1</epicId>
+    <storyId>2</storyId>
+    <title>添加风控相关环境变量</title>
+    <status>ready-for-dev</status>
+    <generatedAt>2025-11-30T00:00:00+00:00</generatedAt>
+    <generator>BMAD Story Context Workflow (simulated by Cascade)</generator>
+    <sourceStoryPath>docs/sprint-artifacts/7-1-2-添加风控相关环境变量.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA><![CDATA[用户（user）]]></asA>
+    <iWant><![CDATA[通过环境变量配置风控参数（configure risk control via environment variables）]]></iWant>
+    <soThat><![CDATA[无需修改代码即可调整风险限制（customize risk limits without changing code）]]></soThat>
+    <tasks><![CDATA[
+- [ ] Task 1: 在 `config/settings.py` 中加载风控相关环境变量
+- [ ] Task 2: 在 `.env.example` 中更新风控相关配置示例
+- [ ] Task 3: 添加配置验证逻辑
+- [ ] Task 4: 添加单元测试覆盖默认值、环境变量覆盖和无效输入回退
+]]></tasks>
+  </story>
+
+  <acceptanceCriteria><![CDATA[
+1. AC1: 在 `config/settings.py` 中添加以下配置常量，并通过环境变量解析：
+   - `RISK_CONTROL_ENABLED`（默认：`true`）
+   - `KILL_SWITCH`（默认：`false`）
+   - `DAILY_LOSS_LIMIT_ENABLED`（默认：`true`）
+   - `DAILY_LOSS_LIMIT_PCT`（默认：`5.0`）
+2. AC2: 在 `.env.example` 中添加上述 4 个环境变量示例和中文说明，解释默认值与风险含义。
+3. AC3: 为 `DAILY_LOSS_LIMIT_PCT` 等数值型配置添加基本验证（例如范围在 `0`–`100` 之间），无效配置会记录 warning 并回退到安全默认值。
+4. AC4: 添加单元测试覆盖：默认值加载、环境变量覆盖、无效输入回退逻辑。
+]]></acceptanceCriteria>
+
+  <artifacts>
+    <docs><![CDATA[
+- path: docs/epic-risk-control-enhancement.md
+  title: 风控系统增强 - Epic 与 Story 分解
+  section: Story 7.1.2: 添加风控相关环境变量
+  snippet: "描述通过环境变量配置风控，使用户无需修改代码即可定制风险限制，并给出推荐的 Python 配置示例。"
+
+- path: docs/sprint-artifacts/tech-spec-epic-7-1.md
+  title: Epic 技术规格: 风控状态管理基础设施
+  section: Objectives and Scope / 环境变量配置
+  snippet: "定义 RISK_CONTROL_ENABLED、KILL_SWITCH、DAILY_LOSS_LIMIT_ENABLED、DAILY_LOSS_LIMIT_PCT 等配置项，并说明它们在核心模块中的作用与依赖关系。"
+
+- path: docs/prd-risk-control-enhancement.md
+  title: 风控系统增强 - 产品需求文档
+  section: 环境变量 / 功能需求
+  snippet: "给出 Kill-Switch 与每日亏损限制的产品级需求，包含环境变量表和 FR12–FR18 等需求条目。"
+
+- path: docs/prd.md
+  title: DeepSeek Paper Trading Bot 产品需求文档
+  section: 4.2 风险控制与资金管理
+  snippet: "描述单笔风险限制、止损/止盈强制要求以及总体风险管理目标，为风控增强提供上游业务背景。"
+
+- path: docs/architecture/06-project-structure-and-mapping.md
+  title: 6. 项目结构与 PRD 映射
+  section: 6. 项目结构与源码树
+  snippet: "说明配置入口集中在 config/settings.py，风险控制与资金管理功能通过该模块统一加载环境变量。"
+
+- path: docs/architecture/07-implementation-patterns.md
+  title: 7. 实现模式与一致性规则
+  section: 7.6 位置模式 / 7.8 测试与校验模式
+  snippet: "要求新增配置项必须通过 .env 与 config/settings.py 管理，并在 tests/ 目录使用 pytest 编写自动化测试。"
+]]></docs>
+
+    <code><![CDATA[
+- path: config/settings.py
+  kind: config-module
+  symbol: _parse_bool_env
+  lines: "23-32"
+  reason: "统一的布尔环境变量解析入口，新风控配置应复用该模式以保持一致性与日志记录。"
+
+- path: config/settings.py
+  kind: config-module
+  symbol: TradingConfig / load_trading_config_from_env
+  lines: "152-232"
+  reason: "展示如何将环境变量组合为高层 TradingConfig，对新风控配置的整体验证和组合有参考价值。"
+
+- path: core/risk_control.py
+  kind: risk-control-state
+  symbol: RiskControlState
+  lines: "13-68"
+  reason: "定义 Kill-Switch 与每日亏损状态的数据结构，是风控环境变量生效后的状态落地点。"
+
+- path: tests/test_risk_control.py
+  kind: test
+  symbol: RiskControlState test suite
+  lines: "9-233"
+  reason: "验证 RiskControlState 默认值、序列化与反序列化行为，为后续扩展风控字段提供测试模式参考。"
+
+- path: tests/test_config_and_env.py
+  kind: test
+  symbol: BacktestConfigFromEnvironmentTests
+  lines: "11-187"
+  reason: "展示如何对环境变量解析与默认值/无效值回退进行单元测试，可直接借鉴到风控配置测试。"
+
+- path: notifications/telegram.py
+  kind: notification
+  symbol: send_telegram_message
+  lines: "37-101"
+  reason: "统一的 Telegram 通知发送入口，后续 Kill-Switch 与每日亏损触发通知会依赖该模块。"
+]]></code>
+
+    <dependencies><![CDATA[
+python:
+  - name: python-dotenv
+    reason: "从 .env 加载环境变量，是基于配置驱动风控行为的基础依赖。"
+  - name: requests
+    reason: "用于调用 Telegram Bot API，支持风控相关告警通知。"
+  - name: pytest
+    reason: "项目使用 pytest 作为单元测试框架，风控配置与状态的测试应复用该框架。"
+
+project:
+  - name: tests
+    reason: "集中存放所有自动化测试，包含 test_config_and_env.py 与 test_risk_control.py。"
+]]></dependencies>
+  </artifacts>
+
+  <constraints><![CDATA[
+- 所有风控相关配置必须通过环境变量与 config/settings.py 管理，禁止在业务代码中直接调用 os.getenv。
+- 默认配置必须是「安全的」：启用风控（RISK_CONTROL_ENABLED=true）、启用每日亏损限制（DAILY_LOSS_LIMIT_ENABLED=true）、Kill-Switch 默认关闭（KILL_SWITCH=false）。
+- 数值型阈值（如 DAILY_LOSS_LIMIT_PCT）需要做范围校验与日志记录，无效配置不得悄然生效。
+- 新增配置项需要在 .env.example 与相关文档中显式列出，并符合架构文档中的位置与一致性模式。
+]]></constraints>
+
+  <interfaces><![CDATA[
+- name: RISK_CONTROL_ENABLED
+  kind: env + config constant
+  signature: "bool, default true"
+  path: "docs/prd-risk-control-enhancement.md#环境变量; docs/sprint-artifacts/tech-spec-epic-7-1.md#Objectives-and-Scope"
+
+- name: KILL_SWITCH
+  kind: env + config constant
+  signature: "bool, default false"
+  path: "docs/prd-risk-control-enhancement.md#环境变量; docs/prd-risk-control-enhancement.md#Kill-Switch-功能"
+
+- name: DAILY_LOSS_LIMIT_ENABLED
+  kind: env + config constant
+  signature: "bool, default true"
+  path: "docs/prd-risk-control-enhancement.md#环境变量; docs/prd-risk-control-enhancement.md#每日亏损限制功能"
+
+- name: DAILY_LOSS_LIMIT_PCT
+  kind: env + config constant
+  signature: "float, default 5.0"
+  path: "docs/prd-risk-control-enhancement.md#环境变量; docs/sprint-artifacts/tech-spec-epic-7-1.md#Objectives-and-Scope"
+]]></interfaces>
+
+  <tests>
+    <standards><![CDATA[
+项目使用 pytest 作为测试框架，所有配置与风控相关逻辑应在 tests/ 目录下以 test_*.py 形式编写单元测试。测试需覆盖：默认配置、环境变量覆盖、无效输入回退与向后兼容性，并可通过 ./scripts/run_tests.sh 统一执行。
+]]></standards>
+    <locations><![CDATA[
+- tests/test_config_and_env.py
+- tests/test_risk_control.py
+- tests/
+]]></locations>
+    <ideas><![CDATA[
+- 针对 AC1：构造不同环境变量组合，验证 RISK_CONTROL_ENABLED、KILL_SWITCH、DAILY_LOSS_LIMIT_ENABLED、DAILY_LOSS_LIMIT_PCT 在缺省与显式设置时解析为预期值。
+- 针对 AC2：可选地在测试中检查 .env.example 是否包含上述 4 个变量名（如通过简单文本搜索），确保文档与实现同步。
+- 针对 AC3：为 DAILY_LOSS_LIMIT_PCT 提供非法值（负数、超过 100、非数字），验证代码会记录 warning 并回退到默认值，而不会抛出异常或使用危险配置。
+- 针对 AC4：综合测试一组代表性环境组合，确保配置解析结果与 PRD/Tech Spec 中的约定一致。
+]]></ideas>
+  </tests>
+</story-context>
