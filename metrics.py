@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from typing import Any, Dict, Iterable, Optional
 
 import numpy as np
 
@@ -59,3 +59,103 @@ def calculate_sortino_ratio(
     if not np.isfinite(sortino):
         return None
     return float(sortino)
+
+
+def calculate_pnl_for_price(pos: Dict[str, Any], target_price: float) -> float:
+    """Return gross PnL for a hypothetical exit price.
+
+    This helper operates purely on the provided position mapping and target
+    price, without depending on any global state.
+    """
+    try:
+        quantity = float(pos.get("quantity", 0.0))
+        entry_price = float(pos.get("entry_price", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+    side = str(pos.get("side", "long")).lower()
+    if side == "short":
+        return (entry_price - target_price) * quantity
+    return (target_price - entry_price) * quantity
+
+
+def calculate_unrealized_pnl_for_position(
+    pos: Dict[str, Any],
+    current_price: float,
+) -> float:
+    """Calculate unrealized PnL for a single position at the given price."""
+    return calculate_pnl_for_price(pos, current_price)
+
+
+def calculate_net_unrealized_pnl_for_position(
+    pos: Dict[str, Any],
+    current_price: float,
+) -> float:
+    """Calculate unrealized PnL after subtracting fees already paid."""
+    gross_pnl = calculate_unrealized_pnl_for_position(pos, current_price)
+    try:
+        fees_paid = float(pos.get("fees_paid", 0.0))
+    except (TypeError, ValueError):
+        fees_paid = 0.0
+    return gross_pnl - fees_paid
+
+
+def estimate_exit_fee_for_position(
+    pos: Dict[str, Any],
+    exit_price: float,
+    default_fee_rate: float,
+) -> float:
+    """Estimate taker/maker fee required to exit the position.
+
+    The caller is responsible for providing the default taker fee rate so that
+    this helper remains independent from bot module globals.
+    """
+    try:
+        quantity = float(pos.get("quantity", 0.0))
+    except (TypeError, ValueError):
+        quantity = 0.0
+
+    fee_rate = pos.get("fee_rate", default_fee_rate)
+    try:
+        fee_rate_value = float(fee_rate)
+    except (TypeError, ValueError):
+        fee_rate_value = default_fee_rate
+
+    estimated_fee = quantity * exit_price * fee_rate_value
+    return max(estimated_fee, 0.0)
+
+
+def calculate_total_margin_for_positions(
+    positions: Iterable[Dict[str, Any]],
+) -> float:
+    """Return sum of margin allocated across the provided positions."""
+    total = 0.0
+    for pos in positions:
+        try:
+            total += float(pos.get("margin", 0.0))
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def format_leverage_display(leverage: Any) -> str:
+    if leverage is None:
+        return "n/a"
+    if isinstance(leverage, str):
+        cleaned = leverage.strip()
+        if not cleaned:
+            return "n/a"
+        if cleaned.lower().endswith("x"):
+            return cleaned.lower()
+        try:
+            value = float(cleaned)
+        except (TypeError, ValueError):
+            return cleaned
+    else:
+        try:
+            value = float(leverage)
+        except (TypeError, ValueError):
+            return str(leverage)
+    if value.is_integer():
+        return f"{int(value)}x"
+    return f"{value:g}x"

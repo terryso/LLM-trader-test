@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Tuple
 
 import csv
 import json
@@ -130,3 +130,150 @@ def save_state_to_json(state_json: Path, payload: Dict[str, Any]) -> None:
             json.dump(payload, f, indent=2)
     except Exception as exc:  # pragma: no cover - defensive logging only
         logging.error("Failed to save state to %s: %s", state_json, exc, exc_info=True)
+
+
+def load_state_from_json(
+    state_json: Path,
+    start_capital: float,
+    taker_fee_rate: float,
+) -> Tuple[float, Dict[str, Dict[str, Any]], int]:
+    """Load persisted balance, positions, and iteration counter from JSON.
+
+    Mirrors the normalisation logic of bot.load_state but operates purely on
+    explicit arguments and returns derived values instead of mutating globals.
+    """
+    with open(state_json, "r") as f:
+        data = json.load(f)
+
+    balance = float(data.get("balance", start_capital))
+    try:
+        iteration_counter = int(data.get("iteration", 0))
+    except (TypeError, ValueError):
+        iteration_counter = 0
+
+    loaded_positions = data.get("positions", {})
+    restored_positions: Dict[str, Dict[str, Any]] = {}
+    if isinstance(loaded_positions, dict):
+        for coin, pos in loaded_positions.items():
+            if not isinstance(pos, dict):
+                continue
+
+            fees_paid_raw = pos.get("fees_paid", pos.get("entry_fee", 0.0))
+            if fees_paid_raw is None:
+                fees_paid_value = 0.0
+            else:
+                try:
+                    fees_paid_value = float(fees_paid_raw)
+                except (TypeError, ValueError):
+                    fees_paid_value = 0.0
+
+            fee_rate_raw = pos.get("fee_rate", taker_fee_rate)
+            try:
+                fee_rate_value = float(fee_rate_raw)
+            except (TypeError, ValueError):
+                fee_rate_value = taker_fee_rate
+
+            restored_positions[coin] = {
+                "side": pos.get("side", "long"),
+                "quantity": float(pos.get("quantity", 0.0)),
+                "entry_price": float(pos.get("entry_price", 0.0)),
+                "profit_target": float(pos.get("profit_target", 0.0)),
+                "stop_loss": float(pos.get("stop_loss", 0.0)),
+                "leverage": float(pos.get("leverage", 1)),
+                "confidence": float(pos.get("confidence", 0.0)),
+                "invalidation_condition": pos.get("invalidation_condition", ""),
+                "margin": float(pos.get("margin", 0.0)),
+                "fees_paid": fees_paid_value,
+                "fee_rate": fee_rate_value,
+                "liquidity": pos.get("liquidity", "taker"),
+                "entry_justification": pos.get("entry_justification", ""),
+                "last_justification": pos.get(
+                    "last_justification",
+                    pos.get("entry_justification", ""),
+                ),
+                "live_backend": pos.get("live_backend"),
+                "entry_oid": pos.get("entry_oid", -1),
+                "tp_oid": pos.get("tp_oid", -1),
+                "sl_oid": pos.get("sl_oid", -1),
+                "close_oid": pos.get("close_oid", -1),
+            }
+
+    return balance, restored_positions, iteration_counter
+
+
+def append_portfolio_state_row(
+    state_csv: Path,
+    timestamp_iso: str,
+    total_balance: str,
+    total_equity: str,
+    total_return_pct: str,
+    num_positions: int,
+    position_details: str,
+    total_margin: str,
+    net_unrealized_pnl: str,
+    btc_price: str,
+) -> None:
+    """Append a single portfolio state row to the CSV.
+
+    This mirrors the row layout defined by STATE_COLUMNS in bot.py so callers
+    stay responsible for computing values while state_io owns the file I/O.
+    """
+    try:
+        with open(state_csv, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    timestamp_iso,
+                    total_balance,
+                    total_equity,
+                    total_return_pct,
+                    num_positions,
+                    position_details,
+                    total_margin,
+                    net_unrealized_pnl,
+                    btc_price,
+                ]
+            )
+    except Exception as exc:  # pragma: no cover - defensive logging only
+        logging.error("Failed to append portfolio state row to %s: %s", state_csv, exc, exc_info=True)
+
+
+def append_trade_row(
+    trades_csv: Path,
+    timestamp_iso: str,
+    coin: str,
+    action: str,
+    side: str,
+    quantity: Any,
+    price: Any,
+    profit_target: Any,
+    stop_loss: Any,
+    leverage: Any,
+    confidence: Any,
+    pnl: Any,
+    balance_after: Any,
+    reason: str,
+) -> None:
+    """Append a trade execution row to the trade history CSV."""
+    try:
+        with open(trades_csv, "a", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    timestamp_iso,
+                    coin,
+                    action,
+                    side,
+                    quantity,
+                    price,
+                    profit_target,
+                    stop_loss,
+                    leverage,
+                    confidence,
+                    pnl,
+                    balance_after,
+                    reason,
+                ]
+            )
+    except Exception as exc:  # pragma: no cover - defensive logging only
+        logging.error("Failed to append trade row to %s: %s", trades_csv, exc, exc_info=True)
