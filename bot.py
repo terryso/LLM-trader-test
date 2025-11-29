@@ -606,6 +606,8 @@ STATE_JSON = DATA_DIR / "portfolio_state.json"
 TRADES_CSV = DATA_DIR / "trade_history.csv"
 DECISIONS_CSV = DATA_DIR / "ai_decisions.csv"
 MESSAGES_CSV = DATA_DIR / "ai_messages.csv"
+MESSAGES_RECENT_CSV = DATA_DIR / "ai_messages_recent.csv"
+MAX_RECENT_MESSAGES = 100
 STATE_COLUMNS = [
     'timestamp',
     'total_balance',
@@ -763,17 +765,45 @@ def log_ai_decision(coin: str, signal: str, reasoning: str, confidence: float) -
         ])
 
 
+def _append_recent_ai_message(row: List[str]) -> None:
+    rows: List[List[str]] = []
+    header = ['timestamp', 'direction', 'role', 'content', 'metadata']
+    if MESSAGES_RECENT_CSV.exists():
+        with open(MESSAGES_RECENT_CSV, 'r', newline='') as f:
+            reader = csv.reader(f)
+            try:
+                existing_header = next(reader)
+            except StopIteration:
+                existing_header = []
+            if existing_header:
+                header = existing_header
+            for existing_row in reader:
+                rows.append(existing_row)
+    rows.append(row)
+    if len(rows) > MAX_RECENT_MESSAGES:
+        rows = rows[-MAX_RECENT_MESSAGES:]
+    with open(MESSAGES_RECENT_CSV, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerows(rows)
+
+
 def log_ai_message(direction: str, role: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> None:
     """Log raw messages exchanged with the AI provider."""
+    row = [
+        get_current_time().isoformat(),
+        direction,
+        role,
+        content,
+        json.dumps(metadata) if metadata else "",
+    ]
     with open(MESSAGES_CSV, 'a', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow([
-            get_current_time().isoformat(),
-            direction,
-            role,
-            content,
-            json.dumps(metadata) if metadata else ""
-        ])
+        writer.writerow(row)
+    try:
+        _append_recent_ai_message(row)
+    except Exception as exc:
+        logging.debug("Failed to update recent AI messages CSV: %s", exc)
 
 def strip_ansi_codes(text: str) -> str:
     """Remove ANSI color codes so Telegram receives plain text."""

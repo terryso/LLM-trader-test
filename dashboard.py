@@ -26,6 +26,7 @@ STATE_CSV = DATA_DIR / "portfolio_state.csv"
 TRADES_CSV = DATA_DIR / "trade_history.csv"
 DECISIONS_CSV = DATA_DIR / "ai_decisions.csv"
 MESSAGES_CSV = DATA_DIR / "ai_messages.csv"
+MESSAGES_RECENT_CSV = DATA_DIR / "ai_messages_recent.csv"
 ENV_PATH = BASE_DIR / ".env"
 DEFAULT_RISK_FREE_RATE = 0.0
 DEFAULT_SNAPSHOT_SECONDS = 180.0
@@ -160,11 +161,15 @@ def get_ai_decisions() -> pd.DataFrame:
 
 @st.cache_data(ttl=15)
 def get_ai_messages() -> pd.DataFrame:
-    df = load_csv(MESSAGES_CSV, parse_dates=["timestamp"])
-    if df.empty:
+    # Prefer a small recent-messages file when available, to avoid loading
+    # very large histories (especially in cloud/remote setups).
+    for path in (MESSAGES_RECENT_CSV, MESSAGES_CSV):
+        df = load_csv(path, parse_dates=["timestamp"])
+        if df.empty:
+            continue
+        df.sort_values("timestamp", inplace=True, ascending=False)
         return df
-    df.sort_values("timestamp", inplace=True, ascending=False)
-    return df
+    return pd.DataFrame()
 
 
 def parse_positions(position_text: str | float) -> pd.DataFrame:
