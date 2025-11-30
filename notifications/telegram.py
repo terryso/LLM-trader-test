@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
 import requests
 
@@ -183,3 +183,262 @@ def send_close_signal_to_telegram(
         timestamp=timestamp,
     )
     send_fn(close_text, signals_chat_id, "Markdown")
+
+
+# ──────────────────────── KILL-SWITCH NOTIFICATIONS ────────────────────────
+
+
+def build_kill_switch_activated_message(
+    *,
+    reason: str,
+    triggered_at: str,
+    positions_count: int,
+) -> str:
+    """Build the Telegram message for Kill-Switch activation.
+
+    Args:
+        reason: The reason for Kill-Switch activation (e.g., "env:KILL_SWITCH",
+            "runtime:manual", "daily_loss_limit").
+        triggered_at: ISO 8601 UTC timestamp when Kill-Switch was triggered.
+        positions_count: Current number of open positions.
+
+    Returns:
+        Formatted Markdown message string for Telegram.
+    """
+    # Map reason codes to human-readable descriptions
+    reason_display = _format_kill_switch_reason(reason)
+
+    message = (
+        f"🚨 *Kill\\-Switch 已激活*\n\n"
+        f"*触发原因:* {escape_markdown(reason_display)}\n"
+        f"*触发时间:* `{triggered_at}`\n"
+        f"*当前持仓:* {positions_count} 个\n\n"
+        f"⚠️ 新开仓信号已被阻止，现有持仓的止损/止盈仍正常执行。\n\n"
+        f"💡 恢复交易请使用: `/resume confirm`"
+    )
+    return message
+
+
+def build_kill_switch_deactivated_message(
+    *,
+    deactivated_at: str,
+    reason: str,
+) -> str:
+    """Build the Telegram message for Kill-Switch deactivation.
+
+    Args:
+        deactivated_at: ISO 8601 UTC timestamp when Kill-Switch was deactivated.
+        reason: The reason for deactivation (e.g., "runtime:resume",
+            "telegram:/resume", "env:KILL_SWITCH").
+
+    Returns:
+        Formatted Markdown message string for Telegram.
+    """
+    reason_display = _format_kill_switch_deactivation_reason(reason)
+
+    message = (
+        f"✅ *Kill\\-Switch 已解除*\n\n"
+        f"*解除时间:* `{deactivated_at}`\n"
+        f"*解除原因:* {escape_markdown(reason_display)}\n\n"
+        f"📈 交易功能已恢复正常，新开仓信号将被正常处理。"
+    )
+    return message
+
+
+def _format_kill_switch_reason(reason: str) -> str:
+    """Convert reason code to human-readable description for activation."""
+    reason_map = {
+        "env:KILL_SWITCH": "环境变量 KILL_SWITCH=true",
+        "runtime:manual": "手动触发",
+        "daily_loss_limit": "每日亏损限制",
+        "telegram:/kill": "Telegram 命令 /kill",
+    }
+    return reason_map.get(reason, reason)
+
+
+def _format_kill_switch_deactivation_reason(reason: str) -> str:
+    """Convert reason code to human-readable description for deactivation."""
+    reason_map = {
+        "env:KILL_SWITCH": "环境变量 KILL_SWITCH=false",
+        "runtime:resume": "运行时恢复",
+        "telegram:/resume": "Telegram 命令 /resume confirm",
+        "daily_reset": "每日亏损限制手动重置",
+    }
+    return reason_map.get(reason, reason)
+
+
+def notify_kill_switch_activated(
+    *,
+    reason: str,
+    triggered_at: str,
+    positions_count: int,
+    bot_token: str,
+    chat_id: str,
+    send_fn: Optional[Callable[..., None]] = None,
+) -> bool:
+    """Send Kill-Switch activation notification to Telegram.
+
+    This function handles the complete notification flow including:
+    - Checking if Telegram is configured
+    - Building the message
+    - Sending via the provided send function or default
+
+    Args:
+        reason: The reason for Kill-Switch activation.
+        triggered_at: ISO 8601 UTC timestamp when Kill-Switch was triggered.
+        positions_count: Current number of open positions.
+        bot_token: Telegram bot token.
+        chat_id: Telegram chat ID.
+        send_fn: Optional custom send function for testing. If None, uses
+            send_telegram_message.
+
+    Returns:
+        True if notification was sent (or attempted), False if skipped due to
+        missing configuration.
+    """
+    if not bot_token or not chat_id:
+        logging.info(
+            "Kill-Switch activation notification skipped: Telegram not configured "
+            "(bot_token=%s, chat_id=%s)",
+            "set" if bot_token else "missing",
+            "set" if chat_id else "missing",
+        )
+        return False
+
+    message = build_kill_switch_activated_message(
+        reason=reason,
+        triggered_at=triggered_at,
+        positions_count=positions_count,
+    )
+
+    if send_fn is not None:
+        send_fn(
+            bot_token=bot_token,
+            default_chat_id=chat_id,
+            text=message,
+            parse_mode="MarkdownV2",
+        )
+    else:
+        send_telegram_message(
+            bot_token=bot_token,
+            default_chat_id=chat_id,
+            text=message,
+            parse_mode="MarkdownV2",
+        )
+
+    logging.info(
+        "Kill-Switch activation notification sent: reason=%s, positions_count=%d",
+        reason,
+        positions_count,
+    )
+    return True
+
+
+def notify_kill_switch_deactivated(
+    *,
+    deactivated_at: str,
+    reason: str,
+    bot_token: str,
+    chat_id: str,
+    send_fn: Optional[Callable[..., None]] = None,
+) -> bool:
+    """Send Kill-Switch deactivation notification to Telegram.
+
+    This function handles the complete notification flow including:
+    - Checking if Telegram is configured
+    - Building the message
+    - Sending via the provided send function or default
+
+    Args:
+        deactivated_at: ISO 8601 UTC timestamp when Kill-Switch was deactivated.
+        reason: The reason for deactivation.
+        bot_token: Telegram bot token.
+        chat_id: Telegram chat ID.
+        send_fn: Optional custom send function for testing. If None, uses
+            send_telegram_message.
+
+    Returns:
+        True if notification was sent (or attempted), False if skipped due to
+        missing configuration.
+    """
+    if not bot_token or not chat_id:
+        logging.info(
+            "Kill-Switch deactivation notification skipped: Telegram not configured "
+            "(bot_token=%s, chat_id=%s)",
+            "set" if bot_token else "missing",
+            "set" if chat_id else "missing",
+        )
+        return False
+
+    message = build_kill_switch_deactivated_message(
+        deactivated_at=deactivated_at,
+        reason=reason,
+    )
+
+    if send_fn is not None:
+        send_fn(
+            bot_token=bot_token,
+            default_chat_id=chat_id,
+            text=message,
+            parse_mode="MarkdownV2",
+        )
+    else:
+        send_telegram_message(
+            bot_token=bot_token,
+            default_chat_id=chat_id,
+            text=message,
+            parse_mode="MarkdownV2",
+        )
+
+    logging.info(
+        "Kill-Switch deactivation notification sent: reason=%s",
+        reason,
+    )
+    return True
+
+
+def create_kill_switch_notify_callbacks(
+    bot_token: str,
+    chat_id: str,
+    send_fn: Optional[Callable[..., None]] = None,
+) -> Tuple[
+    Optional[Callable[[str, str, int], None]],
+    Optional[Callable[[str, str], None]],
+]:
+    """Create notification callbacks for Kill-Switch state changes.
+
+    This factory function creates properly configured callbacks that can be
+    passed to activate_kill_switch and deactivate_kill_switch functions.
+
+    Args:
+        bot_token: Telegram bot token.
+        chat_id: Telegram chat ID.
+        send_fn: Optional custom send function for testing.
+
+    Returns:
+        A tuple of (activate_notify_fn, deactivate_notify_fn). Both will be
+        None if Telegram is not configured (missing bot_token or chat_id).
+    """
+    if not bot_token or not chat_id:
+        return None, None
+
+    def activate_notify(reason: str, triggered_at: str, positions_count: int) -> None:
+        notify_kill_switch_activated(
+            reason=reason,
+            triggered_at=triggered_at,
+            positions_count=positions_count,
+            bot_token=bot_token,
+            chat_id=chat_id,
+            send_fn=send_fn,
+        )
+
+    def deactivate_notify(deactivated_at: str, reason: str) -> None:
+        notify_kill_switch_deactivated(
+            deactivated_at=deactivated_at,
+            reason=reason,
+            bot_token=bot_token,
+            chat_id=chat_id,
+            send_fn=send_fn,
+        )
+
+    return activate_notify, deactivate_notify

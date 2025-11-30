@@ -374,13 +374,22 @@ def execute_close(coin: str, decision: Dict, current_price: float) -> None:
     _get_executor().execute_close(coin, decision, current_price)
 
 
-def process_ai_decisions(decisions: Dict[str, Any], *, allow_entry: bool = True) -> None:
+def process_ai_decisions(
+    decisions: Dict[str, Any],
+    *,
+    allow_entry: bool = True,
+    kill_switch_active: bool = False,
+    kill_switch_reason: Optional[str] = None,
+) -> None:
     """Process AI decisions for all coins.
     
     Args:
         decisions: Dictionary of AI decisions keyed by coin.
-        allow_entry: If False, entry signals are blocked (Kill-Switch active).
-            Close and hold signals are still processed normally.
+        allow_entry: If False, entry signals are blocked (Kill-Switch active or
+            other risk control condition). Close and hold signals are still
+            processed normally.
+        kill_switch_active: Whether Kill-Switch is currently active (for logging).
+        kill_switch_reason: The reason for Kill-Switch activation (for logging).
     """
     executor = _get_executor()
     for coin in SYMBOL_TO_COIN.values():
@@ -402,11 +411,35 @@ def process_ai_decisions(decisions: Dict[str, Any], *, allow_entry: bool = True)
             if allow_entry:
                 execute_entry(coin, decision, price)
             else:
-                # Kill-Switch active: block entry and log
+                # Risk control blocking entry - determine reason for logging
+                if kill_switch_active:
+                    block_reason = f"Kill-Switch active ({kill_switch_reason or 'unknown'})"
+                else:
+                    block_reason = "Risk control (allow_entry=False)"
+                
+                # AC3: Structured log with required fields
                 logging.warning(
-                    "Kill-Switch active, blocking entry signal for %s (price=%.4f, confidence=%d)",
+                    "Risk control: entry blocked | coin=%s | signal=%s | allow_entry=%s | "
+                    "kill_switch_active=%s | reason=%s | price=%.4f | confidence=%d",
                     coin,
+                    signal,
+                    allow_entry,
+                    kill_switch_active,
+                    block_reason,
                     price,
+                    decision.get("confidence", 0),
+                )
+                
+                # AC4: Record blocked entry to ai_decisions.csv for audit trail
+                # Using signal="blocked" with reason in justification field
+                blocked_justification = (
+                    f"RISK_CONTROL_BLOCKED: {block_reason} | "
+                    f"Original: {decision.get('justification', 'N/A')}"
+                )
+                log_ai_decision(
+                    coin,
+                    "blocked",
+                    blocked_justification,
                     decision.get("confidence", 0),
                 )
         elif signal == "close":
@@ -621,7 +654,12 @@ def _run_iteration() -> None:
     logging.info("Requesting trading decisions...")
     decisions = call_deepseek_api(format_prompt_for_deepseek())
     if decisions:
-        process_ai_decisions(decisions, allow_entry=allow_entry)
+        process_ai_decisions(
+            decisions,
+            allow_entry=allow_entry,
+            kill_switch_active=_core_state.risk_control_state.kill_switch_active,
+            kill_switch_reason=_core_state.risk_control_state.kill_switch_reason,
+        )
     
     # Display summary
     _display_portfolio_summary(

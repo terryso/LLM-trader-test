@@ -3,6 +3,7 @@ import unittest
 from unittest import mock
 
 import bot
+import core.state as core_state
 
 
 class CheckStopLossTakeProfitTests(unittest.TestCase):
@@ -172,6 +173,56 @@ class CheckStopLossTakeProfitTests(unittest.TestCase):
 
         bot.check_stop_loss_take_profit()
 
+        self.mock_execute_close.assert_not_called()
+
+    def test_kill_switch_active_does_not_block_sl_tp_in_paper_mode(self) -> None:
+        self._dummy_trader.is_live = False
+        bot.positions = {
+            "ETH": {
+                "side": "long",
+                "entry_price": 100.0,
+                "stop_loss": 90.0,
+                "profit_target": 120.0,
+            }
+        }
+        self.mock_fetch_market_data.return_value = {
+            "price": 100.0,
+            "low": 85.0,
+            "high": 110.0,
+        }
+
+        original_kill_switch = core_state.risk_control_state.kill_switch_active
+        try:
+            core_state.risk_control_state.kill_switch_active = True
+            bot.check_stop_loss_take_profit()
+        finally:
+            core_state.risk_control_state.kill_switch_active = original_kill_switch
+
+        self.mock_execute_close.assert_called_once_with(
+            "ETH",
+            {"justification": "Stop loss hit"},
+            90.0,
+        )
+
+    def test_kill_switch_active_does_not_change_hyperliquid_live_noop(self) -> None:
+        self._dummy_trader.is_live = True
+        bot.positions = {
+            "ETH": {
+                "side": "long",
+                "entry_price": 100.0,
+                "stop_loss": 90.0,
+                "profit_target": 120.0,
+            }
+        }
+
+        original_kill_switch = core_state.risk_control_state.kill_switch_active
+        try:
+            core_state.risk_control_state.kill_switch_active = True
+            bot.check_stop_loss_take_profit()
+        finally:
+            core_state.risk_control_state.kill_switch_active = original_kill_switch
+
+        self.mock_fetch_market_data.assert_not_called()
         self.mock_execute_close.assert_not_called()
 
 

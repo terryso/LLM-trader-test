@@ -26,6 +26,7 @@ from core.persistence import (
     load_state_from_json as _load_state_from_json,
 )
 from core.risk_control import RiskControlState, apply_kill_switch_env_override
+from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 # ──────────────────────── GLOBAL STATE ─────────────────────
 balance: float = START_CAPITAL
@@ -132,7 +133,19 @@ def load_state() -> None:
         risk_control_state = RiskControlState()
 
     # Apply KILL_SWITCH environment variable override (AC1 priority logic)
-    risk_control_state, env_overridden = apply_kill_switch_env_override(risk_control_state)
+    # Create notification callbacks for state changes during env override
+    from notifications.telegram import create_kill_switch_notify_callbacks
+    activate_notify, deactivate_notify = create_kill_switch_notify_callbacks(
+        bot_token=TELEGRAM_BOT_TOKEN,
+        chat_id=TELEGRAM_CHAT_ID,
+    )
+
+    risk_control_state, env_overridden = apply_kill_switch_env_override(
+        risk_control_state,
+        positions_count=len(positions),
+        activate_notify_fn=activate_notify,
+        deactivate_notify_fn=deactivate_notify,
+    )
 
     logging.info(
         "Risk control state loaded: kill_switch_active=%s, daily_loss_pct=%.2f%%%s",

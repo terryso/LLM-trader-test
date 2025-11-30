@@ -1,0 +1,133 @@
+<story-context id=".bmad/bmm/workflows/4-implementation/story-context/template" v="1.0">
+  <metadata>
+    <epicId>7.2</epicId>
+    <storyId>7.2.2</storyId>
+    <title>实现 Kill-Switch 解除逻辑</title>
+    <status>ready-for-dev</status>
+    <generatedAt>2025-11-30T16:58:00+08:00</generatedAt>
+    <generator>BMAD Story Context Workflow</generator>
+    <sourceStoryPath>docs/sprint-artifacts/7-2-2-实现-kill-switch-解除逻辑.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA>As a trading-bot operator who has previously activated the Kill-Switch</asA>
+    <iWant>I want a safe and explicit way to deactivate the Kill-Switch and resume trading once the issue is resolved</iWant>
+    <soThat>so that I can restore normal operation without manually editing state files or accidentally bypassing risk controls</soThat>
+    <tasks>
+- Task 1 – 明确 Kill-Switch 解除语义与 API（AC1, AC5）
+  - 1.1 通读 core/risk_control.py 现有的 activate_kill_switch() / deactivate_kill_switch() / apply_kill_switch_env_override() 实现，整理当前状态字段和日志模式。
+  - 1.2 在 Dev Notes 中给出 Kill-Switch 生命周期状态机（激活 → 持久化 → 解除 → 重启）的文字描述，确保与 PRD/Tech Spec 一致。
+  - 1.3 如有需要，对 deactivate_kill_switch() 的签名和内部实现做最小调整，使其成为唯一权威的解除入口。
+
+- Task 2 – 集成到风控检查与主循环（AC2）
+  - 2.1 确认 check_risk_limits(...) 目前对 Kill-Switch 的判断路径，并在解除后返回「允许 entry」的结果。
+  - 2.2 在 _run_iteration() / process_ai_decisions() 的调用链上验证：Kill-Switch 解除后，LLM 的 signal="entry" 决策可以再次通过风控检查进入执行层。
+  - 2.3 确认不需要在执行层二次修改 Kill-Switch 相关逻辑，如有 defense-in-depth 守卫，确保其行为与解除语义一致。
+
+- Task 3 – 持久化与重启行为验证（AC2, AC4）
+  - 3.1 为解除场景新增集成测试（可复用 7-2-1 的测试夹具），覆盖持久化与重启后的 Kill-Switch 状态。
+  - 3.2 在环境变量与持久化状态冲突的场景下（KILL_SWITCH=true 且状态文件记录未激活），验证始终以环境变量为准。
+
+- Task 4 – 日志与审计完善（AC3, AC5）
+  - 4.1 在 Kill-Switch 解除路径中添加结构化日志条目，并与 7-2-1 中的激活日志保持风格一致。
+  - 4.2 视需要扩展 tests/test_risk_control_integration.py 或相关测试，验证关键日志是否产生。
+  - 4.3 对照 PRD FR19–FR20 和 7.1 Retro 的建议，确认 Kill-Switch 激活与解除在日志和审计层面形成完整闭环。
+    </tasks>
+  </story>
+
+  <acceptanceCriteria>
+AC1 – Kill-Switch 解除语义与状态约束：
+- 在 core/risk_control.py 中提供单一权威的解除逻辑（例如 deactivate_kill_switch(...)），集中更新 RiskControlState.kill_switch_active / kill_switch_reason 字段。
+- 当 Kill-Switch 处于激活状态时调用解除逻辑：将 kill_switch_active 置为 False，并写入清晰的解除原因（例如 "runtime:resume"），用于审计追踪。
+- 不清空 kill_switch_triggered_at 字段，保留最近一次激活时间供后续分析使用。
+- 解除逻辑不修改每日亏损相关字段（daily_start_equity / daily_start_date / daily_loss_pct / daily_loss_triggered），为 Epic 7.3 保持职责边界。
+
+AC2 – 与风控检查入口和主循环的集成：
+- Kill-Switch 激活后调用解除逻辑，后续对 core.risk_control.check_risk_limits(...) 的调用在无其他风控约束前提下返回 True（允许 entry）。
+- bot._run_iteration() / process_ai_decisions() 的调用点无需修改，仅依赖 check_risk_limits(...) 的返回值变化控制 allow_entry。
+- 调用解除逻辑并通过 core.state.save_state() 持久化后，在未显式设置 KILL_SWITCH 环境变量时，下次启动通过 core.state.load_state() 恢复为 Kill-Switch 未激活状态；若 KILL_SWITCH=true 明确设置，则仍以环境变量为准，启动后保持 Kill-Switch 激活。
+
+AC3 – 日志与审计事件：
+- 当 Kill-Switch 被解除时，至少记录一条结构化 INFO 或 WARNING 日志，包含先前状态（active/inactive）、解除原因、daily_loss_triggered 标志以及当前总权益或等价上下文。
+- 如在 Story 7.2.1 中已引入 action="RISK_CONTROL" 类型的 ai_decisions.csv 记录，本 Story 在解除路径上补充对应记录或在 Dev Notes 中说明为何不需要，确保 Kill-Switch 生命周期的审计链条完整。
+
+AC4 – 持久化与重启场景测试：
+- 新增或扩展集成测试覆盖：
+  - 场景 A：通过编程方式激活 Kill-Switch → 运行若干迭代 → 调用解除逻辑 → save_state() → 在 KILL_SWITCH 未显式设置时重启并 load_state()，Kill-Switch 处于未激活状态且 check_risk_limits(...) 返回 True。
+  - 场景 B：在 KILL_SWITCH=true 环境变量下启动 Bot，尝试在运行期调用解除逻辑 → 即使本次运行中可以临时放行或不放行，重启后仍以环境变量为准，Kill-Switch 重新处于激活状态。
+  - 场景 C：状态文件损坏或缺失时的回退行为仍由 Epic 7.1 的逻辑负责，本 Story 不引入新的未捕获异常路径。
+
+AC5 – 与后续 Epic 的边界与契约清晰：
+- 明确本 Story 主要覆盖 PRD 中 Kill-Switch 功能（FR5–FR11）里「解除与恢复」的内部语义与状态管理部分。
+- Telegram /resume 命令与通知由 Epic 7.4 中的 Story 实现；每日亏损触发 Kill-Switch 的逻辑及其重置/确认流程由 Epic 7.3 实现。
+- 在 Dev Notes 中强调：后续 UX 或 Telegram 命令层应通过 core.risk_control 暴露的统一 API 调用解除逻辑，而非直接篡改 JSON 状态文件或随意重置字段。
+  </acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+- path: docs/prd-risk-control-enhancement.md; section: "Kill-Switch（紧急停止）"; snippet: 定义通过环境变量 KILL_SWITCH 和 Telegram 命令 kill/resume 控制 Kill-Switch 的激活与解除，只阻止新开仓，保留现有持仓与 SL/TP 检查，并要求 Kill-Switch 状态持久化到 portfolio_state.json。
+- path: docs/prd-risk-control-enhancement.md; section: "成功标准"; snippet: 要求 Kill-Switch 激活后在下一个迭代周期内停止所有新开仓，同时保证 SL/TP 与 close 信号正常工作，并强调需要可靠的恢复机制（包括命令确认与完整日志记录）。
+- path: docs/epic-risk-control-enhancement.md; section: "Story 7.2.2: 实现 Kill-Switch 解除逻辑"; snippet: 描述 deactivate_kill_switch(state) 的目标和 Technical Notes，包括在每日亏损触发的场景下可能需要 force 参数或与每日亏损 Story 协同处理。
+- path: docs/sprint-artifacts/tech-spec-epic-7-1.md; section: "Data Models and Contracts - RiskControlState"; snippet: 定义 RiskControlState 字段（包括 kill_switch_active/reason/triggered_at 和每日亏损字段）以及 from_dict/to_dict 行为，并说明状态文件的向后兼容和环境变量优先的约定。
+- path: docs/sprint-artifacts/epic-7-1-retro-risk-control.md; section: "3. 可以改进的地方 / 6. Action Items"; snippet: 指出当前代码中尚未完全固化 "环境变量 vs. 持久化状态" 的优先级策略，建议在 Epic 7.2 中补齐 KILL_SWITCH 的行为规则，为本 Story 提供设计依据。
+- path: docs/sprint-artifacts/7-2-1-实现-kill-switch-激活逻辑.md; section: "Learnings from Previous Story"; snippet: 总结了 activate_kill_switch / apply_kill_switch_env_override 已实现的模式、单一状态入口、原子持久化和双层防护策略，为解除逻辑如何复用和扩展这些模式提供参考。
+- path: docs/architecture/03-data-flow.md; section: "3.1 实时交易路径"; snippet: 描述从状态加载、指标计算、LLM 决策到执行与持久化的整体数据流，约束 Kill-Switch 检查插入在数据输入之后、策略与 LLM 调用之前，解除后应恢复正常流转。
+- path: docs/architecture/06-project-structure-and-mapping.md; section: "6.2 PRD 功能块到架构组件的映射"; snippet: 将风险控制与资金管理映射到 execution/routing.py 与 core/metrics.py，将数据持久化映射到 core/state.py 与 core/persistence.py，说明 Kill-Switch 激活与解除应通过这些统一组件完成。
+- path: docs/architecture/07-implementation-patterns.md; section: "7.5 生命周期与错误处理"; snippet: 规定错误处理与日志模式，包括不因外部错误中断主循环、统一日志格式与前缀，这些为 Kill-Switch 激活/解除的日志与异常路径设计提供约束。
+    </docs>
+
+    <code>
+- path: core/risk_control.py; kind: core; symbol: RiskControlState, check_risk_limits, deactivate_kill_switch, apply_kill_switch_env_override; lines: 17-245; reason: 集中管理风控状态与 Kill-Switch 逻辑，本 Story 需要在此精确定义解除语义、保留激活时间并与环境变量优先级逻辑配合。
+- path: core/state.py; kind: core; symbol: load_state, save_state, risk_control_state; lines: N/A; reason: 统一从 portfolio_state.json 加载/保存 risk_control 字段，保证解除后的状态在 save_state/load_state 周期中正确持久化和恢复。
+- path: bot.py; kind: entrypoint; symbol: _run_iteration, process_ai_decisions, load_state, save_state; lines: 219-260, 369-417, 590-647; reason: 主循环负责在每轮开始调用 check_risk_limits() 并将 allow_entry 传递给 process_ai_decisions()，Kill-Switch 解除后应通过相同调用链恢复 entry 行为。
+- path: execution/executor.py; kind: service; symbol: TradeExecutor.execute_entry; lines: 128-150; reason: 在执行层实现 Kill-Switch 最终守卫（executor guard），即使上层漏了检查也会阻止 entry；解除逻辑必须与该守卫行为一致，不引入绕过通道。
+- path: tests/test_risk_control.py; kind: test; symbol: TestDeactivateKillSwitch, TestApplyKillSwitchEnvOverride, TestCheckRiskLimitsKillSwitch; lines: 307-510; reason: 已为 deactivate_kill_switch 和环境变量优先级提供单元测试，本 Story 将在此基础上细化解除语义，并可新增测试覆盖 "reason" 保留策略。
+- path: tests/test_risk_control_integration.py; kind: test; symbol: KillSwitchEnvOverrideIntegrationTests, KillSwitchRestartPersistenceTests, KillSwitchBlocksEntryIntegrationTests, ExecutorKillSwitchGuardTests; lines: 343-703; reason: 覆盖 KILL_SWITCH env 优先级、跨重启持久化以及 Kill-Switch 阻止 entry 的端到端场景，本 Story 需要在这些测试中新增/扩展用例覆盖 "解除后恢复" 行为。
+- path: docs/epic-risk-control-enhancement.md; kind: doc; symbol: Story 7.2.2 section; lines: 193-214; reason: 给出 deactivate_kill_switch 的初始设计与 Technical Notes，本 Story 应根据最新实现与测试结果回写该文档以保持一致。
+    </code>
+
+    <dependencies>
+- ecosystem: python; requirements: python-binance==1.0.19, pandas==2.2.3, numpy==2.1.3, requests==2.31.0, python-dotenv==1.0.0, colorama==0.4.6, streamlit==1.38.0, hyperliquid-python-sdk&gt;=0.9.0, eth-account&gt;=0.10.0, ccxt, streamlit-autorefresh, cryptography。
+- runtime: Python 3.13.3（参见 docs/architecture/07-implementation-patterns.md）。
+- external services: Binance REST API（行情）、OpenRouter/DeepSeek Chat（LLM）、Hyperliquid Perpetuals（实盘）、Telegram Bot API（通知与未来的命令）。
+    </dependencies>
+  </artifacts>
+
+  <constraints>
+- 必须遵循分层架构：Kill-Switch 状态与逻辑位于 core/ 层，bot.py / core.trading_loop 只通过 check_risk_limits() 与 load_state/save_state 协调，execution/ 继续作为执行层，strategy/、llm/、display/ 不直接访问 RiskControlState 或环境变量。
+- 状态持久化必须通过 core/state.py 与 core/persistence.py 统一入口，继续使用原子写入，不新增平行的 JSON/CSV 状态文件；解除后的状态应与其他投资组合字段一并保存和恢复。
+- 解除逻辑不得绕过 PRD 中对每日亏损限制的约束：当 future Epic 7.3 启用 DAILY_LOSS_LIMIT_PCT 时，如果 daily_loss_triggered 为 True，本 Story 不负责自动清除此标志（由 Epic 7.3/7.4 的命令与策略 Story 决定）。
+- 环境变量优先级规则必须保持不变：显式设置的 KILL_SWITCH=true/false 始终覆盖持久化状态；本 Story 不得引入「仅靠解除逻辑就能绕过 env 限制」的路径。
+- 日志必须使用 notifications/logging.py 定义的格式和级别，Kill-Switch 激活与解除的日志前缀应易于 grep 和监控，例如包含 "Kill-Switch" 关键字与原因字段。
+- 性能约束：Kill-Switch 解除与检查逻辑仅在内存中运行，不引入额外 I/O 开销，对每轮迭代的额外延迟应可以忽略。
+  </constraints>
+
+  <interfaces>
+- name: RiskControlState; kind: dataclass; signature: class RiskControlState(kill_switch_active: bool, kill_switch_reason: Optional[str], kill_switch_triggered_at: Optional[str], daily_start_equity: Optional[float], daily_start_date: Optional[str], daily_loss_pct: float, daily_loss_triggered: bool); path: core/risk_control.py。
+- name: check_risk_limits; kind: function; signature: check_risk_limits(risk_control_state: RiskControlState, total_equity: Optional[float] = None, iteration_time: Optional[datetime] = None, risk_control_enabled: bool = True) -&gt; bool; path: core/risk_control.py。
+- name: deactivate_kill_switch; kind: function; signature: deactivate_kill_switch(state: RiskControlState) -&gt; RiskControlState; path: core/risk_control.py。
+- name: apply_kill_switch_env_override; kind: function; signature: apply_kill_switch_env_override(state: RiskControlState, kill_switch_env: Optional[str] = None) -&gt; Tuple[RiskControlState, bool]; path: core/risk_control.py。
+- name: load_state / save_state; kind: functions; signature: load_state() -&gt; None, save_state() -&gt; None; path: core/state.py。
+- name: TradeExecutor.execute_entry; kind: method; signature: execute_entry(self, coin: str, decision: Dict[str, Any], current_price: float) -&gt; None; path: execution/executor.py。
+  </interfaces>
+
+  <tests>
+    <standards>
+项目使用 pytest 作为测试框架，风控相关测试集中在 tests/test_risk_control.py、tests/test_risk_control_config.py、tests/test_risk_control_integration.py 以及部分状态管理测试中。Tech Spec 要求 RiskControlState、配置解析、状态持久化与恢复、check_risk_limits() 行为以及 Kill-Switch 生命周期（激活、解除、跨重启）的关键路径均有对应的单元与集成测试，并保持较高覆盖率（行覆盖率约 90% 以上）。
+    </standards>
+    <locations>
+- tests/test_risk_control.py
+- tests/test_risk_control_config.py
+- tests/test_risk_control_integration.py
+- tests/test_state_management.py
+- tests/
+    </locations>
+    <ideas>
+- AC1：在 tests/test_risk_control.py 中扩展 TestDeactivateKillSwitch，验证解除后 kill_switch_active=False、daily_loss_* 字段保持不变，并可根据需要调整是否清空 kill_switch_triggered_at 字段（本 Story 选择保留激活时间）。
+- AC2：在 tests/test_risk_control_integration.py 中新增测试场景：起始时 Kill-Switch 由 runtime 激活，保存状态后通过调用解除逻辑并再次保存，重启后在未设置 KILL_SWITCH 的前提下，check_risk_limits() 返回 True 且允许 entry。
+- AC3：使用 caplog 捕获解除路径上的日志，验证日志中包含解除原因、daily_loss_triggered 标志以及当前总权益等关键字段，且日志级别与格式符合 architecture/07-implementation-patterns.md 的约定。
+- AC4：在 KillSwitchEnvOverrideIntegrationTests 中增加混合场景：持久化状态标记已解除但 KILL_SWITCH=true 仍被设置，确认重启后仍以环境变量为准保持 Kill-Switch 激活。
+- AC5：为 future Epic 7.3/7.4 预留测试思路：当 daily_loss_triggered=True 时，通过 Telegram 命令或 reset_daily 逻辑调用解除/重置 API，验证不会破坏 env 优先级规则。
+    </ideas>
+  </tests>
+</story-context>

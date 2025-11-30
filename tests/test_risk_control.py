@@ -308,7 +308,7 @@ class TestDeactivateKillSwitch:
     """Tests for deactivate_kill_switch function."""
 
     def test_deactivate_from_active_state(self):
-        """Should deactivate Kill-Switch and clear reason and timestamp."""
+        """Should deactivate Kill-Switch, set new reason, and preserve triggered_at."""
         state = RiskControlState(
             kill_switch_active=True,
             kill_switch_reason="test:active",
@@ -318,16 +318,63 @@ class TestDeactivateKillSwitch:
         new_state = deactivate_kill_switch(state)
 
         assert new_state.kill_switch_active is False
-        assert new_state.kill_switch_reason is None
-        assert new_state.kill_switch_triggered_at is None
+        # AC1: reason should be set to deactivation reason (default: "runtime:resume")
+        assert new_state.kill_switch_reason == "runtime:resume"
+        # AC1: triggered_at should be preserved for audit trail
+        assert new_state.kill_switch_triggered_at == "2025-11-30T10:00:00+00:00"
         # Original state should be unchanged
         assert state.kill_switch_active is True
 
+    def test_deactivate_with_custom_reason(self):
+        """Should accept custom deactivation reason."""
+        state = RiskControlState(
+            kill_switch_active=True,
+            kill_switch_reason="test:active",
+            kill_switch_triggered_at="2025-11-30T10:00:00+00:00",
+        )
+
+        new_state = deactivate_kill_switch(state, reason="telegram:/resume")
+
+        assert new_state.kill_switch_active is False
+        assert new_state.kill_switch_reason == "telegram:/resume"
+        assert new_state.kill_switch_triggered_at == "2025-11-30T10:00:00+00:00"
+
+    def test_deactivate_logs_event_when_active(self, caplog):
+        """Should log INFO when deactivating an active Kill-Switch (AC3)."""
+        state = RiskControlState(
+            kill_switch_active=True,
+            kill_switch_reason="test:active",
+            kill_switch_triggered_at="2025-11-30T10:00:00+00:00",
+            daily_loss_triggered=True,
+        )
+
+        with caplog.at_level(logging.INFO):
+            deactivate_kill_switch(state, reason="runtime:resume", total_equity=9500.0)
+
+        # Updated log format: "Kill-Switch state change" instead of "Kill-Switch deactivated"
+        assert "Kill-Switch state change" in caplog.text
+        assert "old_state=active" in caplog.text
+        assert "new_state=inactive" in caplog.text
+        assert "previous_reason=test:active" in caplog.text
+        assert "deactivation_reason=runtime:resume" in caplog.text
+        assert "daily_loss_triggered=True" in caplog.text
+        assert "total_equity=9500.00" in caplog.text
+
+    def test_deactivate_logs_debug_when_already_inactive(self, caplog):
+        """Should log DEBUG when Kill-Switch is already inactive."""
+        state = RiskControlState(kill_switch_active=False)
+
+        with caplog.at_level(logging.DEBUG):
+            deactivate_kill_switch(state, reason="runtime:resume")
+
+        assert "already inactive" in caplog.text
+
     def test_deactivate_preserves_daily_loss_fields(self):
-        """Should not modify daily loss related fields."""
+        """Should not modify daily loss related fields (AC1)."""
         state = RiskControlState(
             kill_switch_active=True,
             kill_switch_reason="daily_loss",
+            kill_switch_triggered_at="2025-11-30T10:00:00+00:00",
             daily_start_equity=10000.0,
             daily_start_date="2025-11-30",
             daily_loss_pct=-5.0,
@@ -392,8 +439,10 @@ class TestApplyKillSwitchEnvOverride:
         new_state, overridden = apply_kill_switch_env_override(state, kill_switch_env=env_value)
 
         assert new_state.kill_switch_active is False
-        assert new_state.kill_switch_reason is None
-        assert new_state.kill_switch_triggered_at is None
+        # AC1: reason should be set to env:KILL_SWITCH (deactivation reason)
+        assert new_state.kill_switch_reason == "env:KILL_SWITCH"
+        # AC1: triggered_at should be preserved for audit trail
+        assert new_state.kill_switch_triggered_at == "2025-11-30T08:00:00+00:00"
         assert overridden is True
 
     def test_env_true_on_already_active_updates_reason(self):

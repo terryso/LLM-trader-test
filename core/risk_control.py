@@ -11,7 +11,7 @@ import logging
 import os
 from dataclasses import dataclass, asdict, replace
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 
 @dataclass
@@ -129,11 +129,15 @@ def activate_kill_switch(
     state: RiskControlState,
     reason: str,
     triggered_at: Optional[datetime] = None,
+    *,
+    positions_count: int = 0,
+    notify_fn: Optional[Callable[[str, str, int], None]] = None,
 ) -> RiskControlState:
     """Activate the Kill-Switch and return a new state.
 
     This function creates a new RiskControlState with Kill-Switch activated.
-    It sets the reason and timestamp for the activation.
+    It sets the reason and timestamp for the activation. If a notification
+    callback is provided and the state actually changes, it will be called.
 
     Args:
         state: The current risk control state.
@@ -141,46 +145,125 @@ def activate_kill_switch(
             "runtime:manual", "daily_loss_limit").
         triggered_at: The timestamp when Kill-Switch was triggered. If None,
             uses current UTC time.
+        positions_count: Current number of open positions (for notification).
+        notify_fn: Optional callback for sending activation notification.
+            Signature: notify_fn(reason, triggered_at_str, positions_count).
 
     Returns:
         A new RiskControlState with Kill-Switch activated.
     """
+    was_active = state.kill_switch_active
+
     if triggered_at is None:
         triggered_at = datetime.now(timezone.utc)
 
     triggered_at_str = triggered_at.isoformat()
 
-    return replace(
+    new_state = replace(
         state,
         kill_switch_active=True,
         kill_switch_reason=reason,
         kill_switch_triggered_at=triggered_at_str,
     )
 
+    # Log state change (AC4)
+    if not was_active:
+        logging.warning(
+            "Kill-Switch state change: old_state=inactive, new_state=active, "
+            "reason=%s, positions_count=%d, triggered_at=%s",
+            reason,
+            positions_count,
+            triggered_at_str,
+        )
+        # Send notification only when state actually changes (idempotency)
+        if notify_fn is not None:
+            try:
+                notify_fn(reason, triggered_at_str, positions_count)
+            except Exception as e:
+                logging.error(
+                    "Failed to send Kill-Switch activation notification: %s", e
+                )
+    else:
+        logging.debug(
+            "Kill-Switch activate called but was already active: reason=%s",
+            reason,
+        )
 
-def deactivate_kill_switch(state: RiskControlState) -> RiskControlState:
+    return new_state
+
+
+def deactivate_kill_switch(
+    state: RiskControlState,
+    reason: str = "runtime:resume",
+    total_equity: Optional[float] = None,
+    *,
+    notify_fn: Optional[Callable[[str, str], None]] = None,
+) -> RiskControlState:
     """Deactivate the Kill-Switch and return a new state.
 
     This function creates a new RiskControlState with Kill-Switch deactivated.
-    It clears the reason and timestamp fields.
+    It preserves the kill_switch_triggered_at field for audit purposes and
+    sets a new reason indicating the deactivation. If a notification callback
+    is provided and the state actually changes, it will be called.
 
     Args:
         state: The current risk control state.
+        reason: The reason for deactivating Kill-Switch (e.g., "runtime:resume",
+            "telegram:/resume", "env:KILL_SWITCH"). Defaults to "runtime:resume".
+        total_equity: Current total account equity for logging (optional).
+        notify_fn: Optional callback for sending deactivation notification.
+            Signature: notify_fn(deactivated_at_str, reason).
 
     Returns:
         A new RiskControlState with Kill-Switch deactivated.
     """
-    return replace(
+    was_active = state.kill_switch_active
+    previous_reason = state.kill_switch_reason
+    deactivated_at = datetime.now(timezone.utc)
+    deactivated_at_str = deactivated_at.isoformat()
+
+    new_state = replace(
         state,
         kill_switch_active=False,
-        kill_switch_reason=None,
-        kill_switch_triggered_at=None,
+        kill_switch_reason=reason,
+        # Preserve kill_switch_triggered_at for audit trail (AC1)
     )
+
+    # Log the deactivation event (AC4)
+    if was_active:
+        equity_str = f", total_equity={total_equity:.2f}" if total_equity is not None else ""
+        logging.info(
+            "Kill-Switch state change: old_state=active, new_state=inactive, "
+            "previous_reason=%s, deactivation_reason=%s, daily_loss_triggered=%s%s",
+            previous_reason,
+            reason,
+            state.daily_loss_triggered,
+            equity_str,
+        )
+        # Send notification only when state actually changes (idempotency)
+        if notify_fn is not None:
+            try:
+                notify_fn(deactivated_at_str, reason)
+            except Exception as e:
+                logging.error(
+                    "Failed to send Kill-Switch deactivation notification: %s", e
+                )
+    else:
+        logging.debug(
+            "Kill-Switch deactivate called but was already inactive: reason=%s",
+            reason,
+        )
+
+    return new_state
 
 
 def apply_kill_switch_env_override(
     state: RiskControlState,
     kill_switch_env: Optional[str] = None,
+    *,
+    positions_count: int = 0,
+    activate_notify_fn: Optional[Callable[[str, str, int], None]] = None,
+    deactivate_notify_fn: Optional[Callable[[str, str], None]] = None,
 ) -> Tuple[RiskControlState, bool]:
     """Apply KILL_SWITCH environment variable override to the state.
 
@@ -193,6 +276,9 @@ def apply_kill_switch_env_override(
         state: The current risk control state (typically loaded from persistence).
         kill_switch_env: The value of KILL_SWITCH environment variable. If None,
             reads from os.environ.
+        positions_count: Current number of open positions (for notification).
+        activate_notify_fn: Optional callback for activation notification.
+        deactivate_notify_fn: Optional callback for deactivation notification.
 
     Returns:
         A tuple of (new_state, was_overridden) where:
@@ -211,7 +297,12 @@ def apply_kill_switch_env_override(
     if normalized in {"1", "true", "yes", "on"}:
         # Env var explicitly enables Kill-Switch
         if not state.kill_switch_active:
-            new_state = activate_kill_switch(state, reason="env:KILL_SWITCH")
+            new_state = activate_kill_switch(
+                state,
+                reason="env:KILL_SWITCH",
+                positions_count=positions_count,
+                notify_fn=activate_notify_fn,
+            )
             logging.warning(
                 "Kill-Switch activated via environment variable: KILL_SWITCH=%s",
                 kill_switch_env,
@@ -227,10 +318,13 @@ def apply_kill_switch_env_override(
     if normalized in {"0", "false", "no", "off"}:
         # Env var explicitly disables Kill-Switch
         if state.kill_switch_active:
-            new_state = deactivate_kill_switch(state)
-            logging.info(
-                "Kill-Switch deactivated via environment variable: KILL_SWITCH=%s",
-                kill_switch_env,
+            # Note: deactivate_kill_switch already logs the event, so we don't
+            # duplicate the log here. The reason "env:KILL_SWITCH" indicates
+            # the deactivation was triggered by environment variable.
+            new_state = deactivate_kill_switch(
+                state,
+                reason="env:KILL_SWITCH",
+                notify_fn=deactivate_notify_fn,
             )
             return new_state, True
         return state, False

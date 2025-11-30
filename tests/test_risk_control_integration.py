@@ -21,6 +21,7 @@ from core.risk_control import (
     RiskControlState,
     check_risk_limits,
     activate_kill_switch,
+    deactivate_kill_switch,
     apply_kill_switch_env_override,
 )
 
@@ -422,8 +423,13 @@ class KillSwitchEnvOverrideIntegrationTests(TestCase):
 
             # Kill-Switch should be deactivated via env override
             self.assertFalse(core_state.risk_control_state.kill_switch_active)
-            self.assertIsNone(core_state.risk_control_state.kill_switch_reason)
-            self.assertIsNone(core_state.risk_control_state.kill_switch_triggered_at)
+            # AC1: reason should be set to env:KILL_SWITCH (deactivation reason)
+            self.assertEqual(core_state.risk_control_state.kill_switch_reason, "env:KILL_SWITCH")
+            # AC1: triggered_at should be preserved for audit trail
+            self.assertEqual(
+                core_state.risk_control_state.kill_switch_triggered_at,
+                "2025-11-30T10:00:00+00:00",
+            )
             # Daily loss fields should be preserved
             self.assertEqual(core_state.risk_control_state.daily_loss_pct, -20.0)
             self.assertTrue(core_state.risk_control_state.daily_loss_triggered)
@@ -831,6 +837,707 @@ class ExecutorKillSwitchGuardTests(TestCase):
         self.assertIn("BTC", positions)
         mock_log_trade.assert_called_once()
         mock_save_state.assert_called_once()
+
+
+class KillSwitchDeactivationIntegrationTests(TestCase):
+    """Integration tests for Kill-Switch deactivation and resume (Story 7.2.2, AC4)."""
+
+    def setUp(self) -> None:
+        self._orig_balance = core_state.balance
+        self._orig_positions = copy.deepcopy(core_state.positions)
+        self._orig_iteration = core_state.iteration_counter
+        self._orig_risk_control_state = core_state.risk_control_state
+        self._orig_state_json = core_state.STATE_JSON
+        self._orig_kill_switch_env = os.environ.get("KILL_SWITCH")
+
+    def tearDown(self) -> None:
+        core_state.balance = self._orig_balance
+        core_state.positions = copy.deepcopy(self._orig_positions)
+        core_state.iteration_counter = self._orig_iteration
+        core_state.risk_control_state = self._orig_risk_control_state
+        core_state.STATE_JSON = self._orig_state_json
+        if self._orig_kill_switch_env is None:
+            os.environ.pop("KILL_SWITCH", None)
+        else:
+            os.environ["KILL_SWITCH"] = self._orig_kill_switch_env
+
+    def test_scenario_a_deactivate_persists_and_allows_entry_after_restart(self) -> None:
+        """Scenario A: Activate → Deactivate → Save → Restart → Kill-Switch inactive, entry allowed.
+
+        AC4: After deactivation and save_state(), restarting without KILL_SWITCH env
+        should result in Kill-Switch being inactive and check_risk_limits() returning True.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "state.json"
+            os.environ.pop("KILL_SWITCH", None)  # Ensure env is not set
+
+            # Phase 1: Start with inactive Kill-Switch
+            core_state.balance = 10000.0
+            core_state.positions = {}
+            core_state.iteration_counter = 1
+            core_state.risk_control_state = RiskControlState(
+                kill_switch_active=False,
+                daily_start_equity=10000.0,
+                daily_start_date="2025-11-30",
+            )
+
+            # Phase 2: Activate Kill-Switch at runtime
+            core_state.risk_control_state = activate_kill_switch(
+                core_state.risk_control_state,
+                reason="runtime:manual",
+            )
+            self.assertTrue(core_state.risk_control_state.kill_switch_active)
+
+            # Verify check_risk_limits returns False (entry blocked)
+            result = check_risk_limits(
+                risk_control_state=core_state.risk_control_state,
+                total_equity=10000.0,
+                risk_control_enabled=True,
+            )
+            self.assertFalse(result)
+
+            # Phase 3: Deactivate Kill-Switch
+            core_state.risk_control_state = deactivate_kill_switch(
+                core_state.risk_control_state,
+                reason="runtime:resume",
+                total_equity=9500.0,
+            )
+            self.assertFalse(core_state.risk_control_state.kill_switch_active)
+            self.assertEqual(core_state.risk_control_state.kill_switch_reason, "runtime:resume")
+            # AC1: triggered_at should be preserved
+            self.assertIsNotNone(core_state.risk_control_state.kill_switch_triggered_at)
+
+            # Phase 4: Save state
+            with mock.patch.object(core_state, "STATE_JSON", state_path):
+                core_state.save_state()
+
+            # Verify saved state
+            saved_data = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertFalse(saved_data["risk_control"]["kill_switch_active"])
+            self.assertEqual(saved_data["risk_control"]["kill_switch_reason"], "runtime:resume")
+            self.assertIsNotNone(saved_data["risk_control"]["kill_switch_triggered_at"])
+
+            # Phase 5: Simulate restart - reset state and reload
+            core_state.balance = 0.0
+            core_state.positions = {}
+            core_state.iteration_counter = 0
+            core_state.risk_control_state = RiskControlState()
+
+            with mock.patch.object(core_state, "STATE_JSON", state_path):
+                core_state.load_state()
+
+            # Verify Kill-Switch is inactive after restart
+            self.assertFalse(core_state.risk_control_state.kill_switch_active)
+            self.assertEqual(core_state.risk_control_state.kill_switch_reason, "runtime:resume")
+
+            # Verify check_risk_limits returns True (entry allowed)
+            result = check_risk_limits(
+                risk_control_state=core_state.risk_control_state,
+                total_equity=9500.0,
+                risk_control_enabled=True,
+            )
+            self.assertTrue(result)
+
+    def test_scenario_b_env_override_takes_precedence_after_deactivation(self) -> None:
+        """Scenario B: With KILL_SWITCH=true env, deactivation is overridden on restart.
+
+        AC4: Even if Kill-Switch is deactivated at runtime and saved, restarting with
+        KILL_SWITCH=true should result in Kill-Switch being active (env takes precedence).
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "state.json"
+
+            # Phase 1: Start with active Kill-Switch (from env)
+            os.environ["KILL_SWITCH"] = "true"
+            core_state.balance = 10000.0
+            core_state.positions = {}
+            core_state.iteration_counter = 1
+            core_state.risk_control_state = RiskControlState(
+                kill_switch_active=True,
+                kill_switch_reason="env:KILL_SWITCH",
+                kill_switch_triggered_at="2025-11-30T10:00:00+00:00",
+            )
+
+            # Phase 2: Deactivate Kill-Switch at runtime
+            # Note: In a real scenario, this might be allowed temporarily within the session
+            core_state.risk_control_state = deactivate_kill_switch(
+                core_state.risk_control_state,
+                reason="runtime:resume",
+            )
+            self.assertFalse(core_state.risk_control_state.kill_switch_active)
+
+            # Phase 3: Save state (with deactivated Kill-Switch)
+            with mock.patch.object(core_state, "STATE_JSON", state_path):
+                core_state.save_state()
+
+            # Verify saved state shows deactivated
+            saved_data = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertFalse(saved_data["risk_control"]["kill_switch_active"])
+
+            # Phase 4: Simulate restart with KILL_SWITCH=true still set
+            core_state.balance = 0.0
+            core_state.positions = {}
+            core_state.iteration_counter = 0
+            core_state.risk_control_state = RiskControlState()
+
+            # KILL_SWITCH=true is still set in env
+            with mock.patch.object(core_state, "STATE_JSON", state_path):
+                core_state.load_state()
+
+            # Verify Kill-Switch is ACTIVE after restart (env takes precedence)
+            self.assertTrue(core_state.risk_control_state.kill_switch_active)
+            self.assertEqual(core_state.risk_control_state.kill_switch_reason, "env:KILL_SWITCH")
+
+            # Verify check_risk_limits returns False (entry blocked)
+            result = check_risk_limits(
+                risk_control_state=core_state.risk_control_state,
+                total_equity=10000.0,
+                risk_control_enabled=True,
+            )
+            self.assertFalse(result)
+
+    def test_deactivation_preserves_triggered_at_for_audit(self) -> None:
+        """AC1: Deactivation should preserve kill_switch_triggered_at for audit trail."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "state.json"
+            os.environ.pop("KILL_SWITCH", None)
+
+            original_triggered_at = "2025-11-30T10:00:00+00:00"
+
+            # Set up state with active Kill-Switch
+            core_state.balance = 10000.0
+            core_state.positions = {}
+            core_state.iteration_counter = 1
+            core_state.risk_control_state = RiskControlState(
+                kill_switch_active=True,
+                kill_switch_reason="runtime:manual",
+                kill_switch_triggered_at=original_triggered_at,
+                daily_loss_triggered=True,
+            )
+
+            # Deactivate
+            core_state.risk_control_state = deactivate_kill_switch(
+                core_state.risk_control_state,
+                reason="runtime:resume",
+            )
+
+            # Verify triggered_at is preserved
+            self.assertEqual(
+                core_state.risk_control_state.kill_switch_triggered_at,
+                original_triggered_at,
+            )
+
+            # Save and reload
+            with mock.patch.object(core_state, "STATE_JSON", state_path):
+                core_state.save_state()
+
+            core_state.risk_control_state = RiskControlState()
+
+            with mock.patch.object(core_state, "STATE_JSON", state_path):
+                core_state.load_state()
+
+            # Verify triggered_at is still preserved after restart
+            self.assertEqual(
+                core_state.risk_control_state.kill_switch_triggered_at,
+                original_triggered_at,
+            )
+
+    def test_deactivation_preserves_daily_loss_fields(self) -> None:
+        """AC1: Deactivation should not modify daily loss related fields."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "state.json"
+            os.environ.pop("KILL_SWITCH", None)
+
+            # Set up state with active Kill-Switch and daily loss data
+            core_state.balance = 8000.0
+            core_state.positions = {}
+            core_state.iteration_counter = 5
+            core_state.risk_control_state = RiskControlState(
+                kill_switch_active=True,
+                kill_switch_reason="daily_loss_limit",
+                kill_switch_triggered_at="2025-11-30T10:00:00+00:00",
+                daily_start_equity=10000.0,
+                daily_start_date="2025-11-30",
+                daily_loss_pct=-20.0,
+                daily_loss_triggered=True,
+            )
+
+            # Deactivate
+            core_state.risk_control_state = deactivate_kill_switch(
+                core_state.risk_control_state,
+                reason="runtime:resume",
+            )
+
+            # Verify daily loss fields are preserved
+            self.assertEqual(core_state.risk_control_state.daily_start_equity, 10000.0)
+            self.assertEqual(core_state.risk_control_state.daily_start_date, "2025-11-30")
+            self.assertEqual(core_state.risk_control_state.daily_loss_pct, -20.0)
+            self.assertTrue(core_state.risk_control_state.daily_loss_triggered)
+
+            # Save and reload
+            with mock.patch.object(core_state, "STATE_JSON", state_path):
+                core_state.save_state()
+
+            core_state.risk_control_state = RiskControlState()
+
+            with mock.patch.object(core_state, "STATE_JSON", state_path):
+                core_state.load_state()
+
+            # Verify daily loss fields are still preserved after restart
+            self.assertEqual(core_state.risk_control_state.daily_start_equity, 10000.0)
+            self.assertEqual(core_state.risk_control_state.daily_start_date, "2025-11-30")
+            self.assertEqual(core_state.risk_control_state.daily_loss_pct, -20.0)
+            self.assertTrue(core_state.risk_control_state.daily_loss_triggered)
+
+
+class SignalFilteringIntegrationTests(TestCase):
+    """Integration tests for signal filtering logic (Story 7.2.3).
+
+    Covers:
+    - AC1: Signal filtering based on check_risk_limits result (allow_entry)
+    - AC2: Kill-Switch active scenario blocking entry but allowing close/hold
+    - AC3: Structured logging for blocked entry signals
+    - AC4: CSV audit record for blocked entry signals
+    - AC5: Test coverage for boundary conditions
+    """
+
+    def setUp(self) -> None:
+        self._orig_balance = core_state.balance
+        self._orig_positions = copy.deepcopy(core_state.positions)
+        self._orig_iteration = core_state.iteration_counter
+        self._orig_risk_control_state = core_state.risk_control_state
+
+    def tearDown(self) -> None:
+        core_state.balance = self._orig_balance
+        core_state.positions = copy.deepcopy(self._orig_positions)
+        core_state.iteration_counter = self._orig_iteration
+        core_state.risk_control_state = self._orig_risk_control_state
+
+    def test_process_ai_decisions_blocks_entry_when_allow_entry_false(self) -> None:
+        """AC1/AC2: Entry signals should be blocked when allow_entry=False."""
+        from unittest.mock import MagicMock, patch
+        import bot
+
+        # Mock dependencies
+        mock_executor = MagicMock()
+        mock_fetch_market_data = MagicMock(return_value={"price": 50000.0})
+        mock_log_ai_decision = MagicMock()
+        mock_execute_entry = MagicMock()
+        mock_execute_close = MagicMock()
+
+        decisions = {
+            "BTC": {
+                "signal": "entry",
+                "side": "long",
+                "leverage": 5,
+                "profit_target": 52000.0,
+                "stop_loss": 48000.0,
+                "confidence": 80,
+                "justification": "Test entry signal",
+            }
+        }
+
+        with patch.object(bot, "_get_executor", return_value=mock_executor), \
+             patch.object(bot, "fetch_market_data", mock_fetch_market_data), \
+             patch.object(bot, "log_ai_decision", mock_log_ai_decision), \
+             patch.object(bot, "execute_entry", mock_execute_entry), \
+             patch.object(bot, "execute_close", mock_execute_close), \
+             patch.object(bot, "SYMBOL_TO_COIN", {"BTCUSDT": "BTC"}), \
+             patch.object(bot, "COIN_TO_SYMBOL", {"BTC": "BTCUSDT"}):
+
+            # Call with allow_entry=False (Kill-Switch active)
+            with self.assertLogs(level=logging.WARNING) as cm:
+                bot.process_ai_decisions(
+                    decisions,
+                    allow_entry=False,
+                    kill_switch_active=True,
+                    kill_switch_reason="test:integration",
+                )
+
+        # Verify entry was NOT executed
+        mock_execute_entry.assert_not_called()
+
+        # Verify log_ai_decision was called twice:
+        # 1. Original decision (signal="entry")
+        # 2. Blocked decision (signal="blocked")
+        self.assertEqual(mock_log_ai_decision.call_count, 2)
+
+        # Verify the second call was for the blocked signal
+        blocked_call = mock_log_ai_decision.call_args_list[1]
+        self.assertEqual(blocked_call[0][0], "BTC")  # coin
+        self.assertEqual(blocked_call[0][1], "blocked")  # signal
+        self.assertIn("RISK_CONTROL_BLOCKED", blocked_call[0][2])  # reasoning
+        self.assertIn("Kill-Switch active", blocked_call[0][2])
+
+        # AC3: Verify structured log was produced
+        self.assertTrue(
+            any("entry blocked" in msg and "kill_switch_active=True" in msg for msg in cm.output),
+            f"Expected structured log with kill_switch_active, got: {cm.output}",
+        )
+
+    def test_process_ai_decisions_allows_entry_when_allow_entry_true(self) -> None:
+        """AC5 Scenario C: Entry signals should proceed when allow_entry=True."""
+        from unittest.mock import MagicMock, patch
+        import bot
+
+        mock_executor = MagicMock()
+        mock_fetch_market_data = MagicMock(return_value={"price": 50000.0})
+        mock_log_ai_decision = MagicMock()
+        mock_execute_entry = MagicMock()
+
+        decisions = {
+            "BTC": {
+                "signal": "entry",
+                "side": "long",
+                "leverage": 5,
+                "profit_target": 52000.0,
+                "stop_loss": 48000.0,
+                "confidence": 80,
+                "justification": "Test entry signal",
+            }
+        }
+
+        with patch.object(bot, "_get_executor", return_value=mock_executor), \
+             patch.object(bot, "fetch_market_data", mock_fetch_market_data), \
+             patch.object(bot, "log_ai_decision", mock_log_ai_decision), \
+             patch.object(bot, "execute_entry", mock_execute_entry), \
+             patch.object(bot, "SYMBOL_TO_COIN", {"BTCUSDT": "BTC"}), \
+             patch.object(bot, "COIN_TO_SYMBOL", {"BTC": "BTCUSDT"}):
+
+            bot.process_ai_decisions(
+                decisions,
+                allow_entry=True,
+                kill_switch_active=False,
+            )
+
+        # Verify entry WAS executed
+        mock_execute_entry.assert_called_once()
+
+        # Verify log_ai_decision was called only once (original decision)
+        self.assertEqual(mock_log_ai_decision.call_count, 1)
+        self.assertEqual(mock_log_ai_decision.call_args[0][1], "entry")
+
+    def test_process_ai_decisions_allows_close_when_allow_entry_false(self) -> None:
+        """AC2/AC5 Scenario B: Close signals should proceed even when allow_entry=False."""
+        from unittest.mock import MagicMock, patch
+        import bot
+
+        mock_executor = MagicMock()
+        mock_fetch_market_data = MagicMock(return_value={"price": 50000.0})
+        mock_log_ai_decision = MagicMock()
+        mock_execute_entry = MagicMock()
+        mock_execute_close = MagicMock()
+
+        decisions = {
+            "BTC": {
+                "signal": "close",
+                "confidence": 90,
+                "justification": "Test close signal",
+            }
+        }
+
+        with patch.object(bot, "_get_executor", return_value=mock_executor), \
+             patch.object(bot, "fetch_market_data", mock_fetch_market_data), \
+             patch.object(bot, "log_ai_decision", mock_log_ai_decision), \
+             patch.object(bot, "execute_entry", mock_execute_entry), \
+             patch.object(bot, "execute_close", mock_execute_close), \
+             patch.object(bot, "SYMBOL_TO_COIN", {"BTCUSDT": "BTC"}), \
+             patch.object(bot, "COIN_TO_SYMBOL", {"BTC": "BTCUSDT"}):
+
+            bot.process_ai_decisions(
+                decisions,
+                allow_entry=False,
+                kill_switch_active=True,
+                kill_switch_reason="test:integration",
+            )
+
+        # Verify close WAS executed
+        mock_execute_close.assert_called_once()
+
+        # Verify entry was NOT executed
+        mock_execute_entry.assert_not_called()
+
+        # Verify log_ai_decision was called only once (no blocked record for close)
+        self.assertEqual(mock_log_ai_decision.call_count, 1)
+        self.assertEqual(mock_log_ai_decision.call_args[0][1], "close")
+
+    def test_process_ai_decisions_allows_hold_when_allow_entry_false(self) -> None:
+        """AC2/AC5 Scenario B: Hold signals should proceed even when allow_entry=False."""
+        from unittest.mock import MagicMock, patch
+        import bot
+
+        mock_executor = MagicMock()
+        mock_fetch_market_data = MagicMock(return_value={"price": 50000.0})
+        mock_log_ai_decision = MagicMock()
+        mock_execute_entry = MagicMock()
+        mock_execute_close = MagicMock()
+
+        decisions = {
+            "BTC": {
+                "signal": "hold",
+                "confidence": 70,
+                "justification": "Test hold signal",
+            }
+        }
+
+        with patch.object(bot, "_get_executor", return_value=mock_executor), \
+             patch.object(bot, "fetch_market_data", mock_fetch_market_data), \
+             patch.object(bot, "log_ai_decision", mock_log_ai_decision), \
+             patch.object(bot, "execute_entry", mock_execute_entry), \
+             patch.object(bot, "execute_close", mock_execute_close), \
+             patch.object(bot, "SYMBOL_TO_COIN", {"BTCUSDT": "BTC"}), \
+             patch.object(bot, "COIN_TO_SYMBOL", {"BTC": "BTCUSDT"}):
+
+            bot.process_ai_decisions(
+                decisions,
+                allow_entry=False,
+                kill_switch_active=True,
+                kill_switch_reason="test:integration",
+            )
+
+        # Verify hold was processed
+        mock_executor.process_hold_signal.assert_called_once()
+
+        # Verify entry and close were NOT executed
+        mock_execute_entry.assert_not_called()
+        mock_execute_close.assert_not_called()
+
+        # Verify log_ai_decision was called only once (no blocked record for hold)
+        self.assertEqual(mock_log_ai_decision.call_count, 1)
+        self.assertEqual(mock_log_ai_decision.call_args[0][1], "hold")
+
+    def test_blocked_entry_log_contains_required_fields(self) -> None:
+        """AC3: Blocked entry log should contain coin, signal, allow_entry, kill_switch_active, reason."""
+        from unittest.mock import MagicMock, patch
+        import bot
+
+        mock_executor = MagicMock()
+        mock_fetch_market_data = MagicMock(return_value={"price": 50000.0})
+        mock_log_ai_decision = MagicMock()
+        mock_execute_entry = MagicMock()
+
+        decisions = {
+            "BTC": {
+                "signal": "entry",
+                "side": "long",
+                "leverage": 5,
+                "profit_target": 52000.0,
+                "stop_loss": 48000.0,
+                "confidence": 85,
+                "justification": "Bullish momentum",
+            }
+        }
+
+        with patch.object(bot, "_get_executor", return_value=mock_executor), \
+             patch.object(bot, "fetch_market_data", mock_fetch_market_data), \
+             patch.object(bot, "log_ai_decision", mock_log_ai_decision), \
+             patch.object(bot, "execute_entry", mock_execute_entry), \
+             patch.object(bot, "SYMBOL_TO_COIN", {"BTCUSDT": "BTC"}), \
+             patch.object(bot, "COIN_TO_SYMBOL", {"BTC": "BTCUSDT"}):
+
+            with self.assertLogs(level=logging.WARNING) as cm:
+                bot.process_ai_decisions(
+                    decisions,
+                    allow_entry=False,
+                    kill_switch_active=True,
+                    kill_switch_reason="env:KILL_SWITCH",
+                )
+
+        # Verify all required fields are in the log
+        log_output = "\n".join(cm.output)
+        self.assertIn("coin=BTC", log_output)
+        self.assertIn("signal=entry", log_output)
+        self.assertIn("allow_entry=False", log_output)
+        self.assertIn("kill_switch_active=True", log_output)
+        self.assertIn("Kill-Switch active", log_output)
+        self.assertIn("env:KILL_SWITCH", log_output)
+
+    def test_blocked_entry_csv_record_contains_risk_control_marker(self) -> None:
+        """AC4: Blocked entry should produce CSV record with RISK_CONTROL_BLOCKED marker."""
+        from unittest.mock import MagicMock, patch
+        import bot
+
+        mock_executor = MagicMock()
+        mock_fetch_market_data = MagicMock(return_value={"price": 50000.0})
+        mock_log_ai_decision = MagicMock()
+        mock_execute_entry = MagicMock()
+
+        decisions = {
+            "BTC": {
+                "signal": "entry",
+                "side": "long",
+                "leverage": 5,
+                "profit_target": 52000.0,
+                "stop_loss": 48000.0,
+                "confidence": 75,
+                "justification": "Strong support level",
+            }
+        }
+
+        with patch.object(bot, "_get_executor", return_value=mock_executor), \
+             patch.object(bot, "fetch_market_data", mock_fetch_market_data), \
+             patch.object(bot, "log_ai_decision", mock_log_ai_decision), \
+             patch.object(bot, "execute_entry", mock_execute_entry), \
+             patch.object(bot, "SYMBOL_TO_COIN", {"BTCUSDT": "BTC"}), \
+             patch.object(bot, "COIN_TO_SYMBOL", {"BTC": "BTCUSDT"}):
+
+            bot.process_ai_decisions(
+                decisions,
+                allow_entry=False,
+                kill_switch_active=True,
+                kill_switch_reason="runtime:manual",
+            )
+
+        # Find the blocked call
+        blocked_calls = [
+            call for call in mock_log_ai_decision.call_args_list
+            if call[0][1] == "blocked"
+        ]
+        self.assertEqual(len(blocked_calls), 1)
+
+        blocked_call = blocked_calls[0]
+        reasoning = blocked_call[0][2]
+
+        # Verify RISK_CONTROL_BLOCKED marker
+        self.assertIn("RISK_CONTROL_BLOCKED", reasoning)
+        self.assertIn("Kill-Switch active", reasoning)
+        self.assertIn("runtime:manual", reasoning)
+        # Verify original justification is preserved
+        self.assertIn("Strong support level", reasoning)
+
+    def test_non_kill_switch_risk_control_produces_appropriate_log(self) -> None:
+        """AC3: Non-Kill-Switch risk control should produce appropriate log message."""
+        from unittest.mock import MagicMock, patch
+        import bot
+
+        mock_executor = MagicMock()
+        mock_fetch_market_data = MagicMock(return_value={"price": 50000.0})
+        mock_log_ai_decision = MagicMock()
+        mock_execute_entry = MagicMock()
+
+        decisions = {
+            "BTC": {
+                "signal": "entry",
+                "side": "long",
+                "leverage": 5,
+                "profit_target": 52000.0,
+                "stop_loss": 48000.0,
+                "confidence": 80,
+                "justification": "Test entry",
+            }
+        }
+
+        with patch.object(bot, "_get_executor", return_value=mock_executor), \
+             patch.object(bot, "fetch_market_data", mock_fetch_market_data), \
+             patch.object(bot, "log_ai_decision", mock_log_ai_decision), \
+             patch.object(bot, "execute_entry", mock_execute_entry), \
+             patch.object(bot, "SYMBOL_TO_COIN", {"BTCUSDT": "BTC"}), \
+             patch.object(bot, "COIN_TO_SYMBOL", {"BTC": "BTCUSDT"}):
+
+            with self.assertLogs(level=logging.WARNING) as cm:
+                # allow_entry=False but kill_switch_active=False
+                # (future scenario: daily loss limit without Kill-Switch)
+                bot.process_ai_decisions(
+                    decisions,
+                    allow_entry=False,
+                    kill_switch_active=False,
+                    kill_switch_reason=None,
+                )
+
+        # Verify log contains generic risk control message
+        log_output = "\n".join(cm.output)
+        self.assertIn("allow_entry=False", log_output)
+        self.assertIn("kill_switch_active=False", log_output)
+        self.assertIn("Risk control", log_output)
+
+
+class KillSwitchAndStopLossTakeProfitIntegrationTests(TestCase):
+    """Integration tests for Kill-Switch + SL/TP behaviour (Story 7.2.4).
+
+    Focus: When Kill-Switch is active, SL/TP checks must still run in the
+    main loop and trigger closes as usual; Kill-Switch only affects entry.
+    """
+
+    def setUp(self) -> None:
+        self._orig_balance = core_state.balance
+        self._orig_positions = copy.deepcopy(core_state.positions)
+        self._orig_iteration = core_state.iteration_counter
+        self._orig_risk_control_state = core_state.risk_control_state
+
+        import bot  # Local import to avoid circulars at module import time
+
+        self._bot = bot
+        self._orig_bot_positions = copy.deepcopy(bot.positions)
+        self._orig_bot_hyperliquid_trader = bot.hyperliquid_trader
+        self._orig_bot_risk_control_enabled = bot.RISK_CONTROL_ENABLED
+
+    def tearDown(self) -> None:
+        core_state.balance = self._orig_balance
+        core_state.positions = copy.deepcopy(self._orig_positions)
+        core_state.iteration_counter = self._orig_iteration
+        core_state.risk_control_state = self._orig_risk_control_state
+
+        self._bot.positions = copy.deepcopy(self._orig_bot_positions)
+        self._bot.hyperliquid_trader = self._orig_bot_hyperliquid_trader
+        self._bot.RISK_CONTROL_ENABLED = self._orig_bot_risk_control_enabled
+
+    def test_run_iteration_triggers_sl_tp_close_when_kill_switch_active(self) -> None:
+        from unittest.mock import MagicMock, patch
+        import bot
+
+        core_state.risk_control_state = RiskControlState(
+            kill_switch_active=True,
+            kill_switch_reason="test:sl-tp-integration",
+            kill_switch_triggered_at="2025-11-30T12:00:00+00:00",
+        )
+
+        bot.RISK_CONTROL_ENABLED = True
+
+        class _DummyTrader:
+            def __init__(self) -> None:
+                self.is_live = False
+
+        bot.hyperliquid_trader = _DummyTrader()
+
+        bot.positions = {
+            "ETH": {
+                "side": "long",
+                "entry_price": 100.0,
+                "stop_loss": 90.0,
+                "profit_target": 120.0,
+                "quantity": 1.0,
+                "margin": 50.0,
+                "fees_paid": 0.0,
+                "fee_rate": 0.001,
+                "leverage": 1.0,
+            }
+        }
+
+        fake_market_data = {
+            "price": 100.0,
+            "low": 85.0,
+            "high": 110.0,
+        }
+
+        with patch.object(bot, "SYMBOL_TO_COIN", {"ETHUSDT": "ETH"}), \
+             patch.object(bot, "COIN_TO_SYMBOL", {"ETH": "ETHUSDT"}), \
+             patch.object(bot, "get_binance_client", MagicMock(return_value=object())), \
+             patch.object(bot, "call_deepseek_api", MagicMock(return_value=None)), \
+             patch.object(bot, "_display_portfolio_summary", MagicMock()), \
+             patch.object(bot, "_log_portfolio_state", MagicMock()), \
+             patch.object(bot, "send_telegram_message", MagicMock()), \
+             patch.object(bot, "save_state", MagicMock()), \
+             patch.object(bot, "sleep_with_countdown", MagicMock()), \
+             patch.object(bot, "fetch_market_data", MagicMock(return_value=fake_market_data)), \
+             patch.object(bot, "execute_close") as mock_execute_close:
+
+            bot._run_iteration()
+
+        mock_execute_close.assert_called_once_with(
+            "ETH",
+            {"justification": "Stop loss hit"},
+            90.0,
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -1,0 +1,215 @@
+<story-context id=".bmad/bmm/workflows/4-implementation/story-context/template" v="1.0">
+  <metadata>
+    <epicId>7.2</epicId>
+    <storyId>4</storyId>
+    <title>确保 SL/TP 在 Kill-Switch 期间正常工作</title>
+    <status>drafted</status>
+    <generatedAt>2025-11-30T20:32:00+08:00</generatedAt>
+    <generator>BMAD Story Context Workflow (manual agent execution)</generator>
+    <sourceStoryPath>docs/sprint-artifacts/7-2-4-确保-sl-tp-在-kill-switch-期间正常工作.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA><![CDATA[As a trading-bot operator relying on automatic risk protections]]></asA>
+    <iWant><![CDATA[I want stop-loss and take-profit checks to keep working even when the Kill-Switch is active]]></iWant>
+    <soThat><![CDATA[so that existing positions can still be protected and unwound safely during emergency shutdowns.]]></soThat>
+    <tasks><![CDATA[
+- [ ] **Task 1 – 梳理 Kill-Switch + SL/TP 数据流与职责边界（AC1, AC2, AC3）**  
+  - [ ] 1.1 基于 `docs/architecture/03-data-flow.md` 与当前 `bot._run_iteration()`，绘制从 RiskControlState → `check_risk_limits(...)` → `allow_entry` → `check_stop_loss_take_profit()` → `process_ai_decisions(...)` → `TradeExecutor` 的简化数据流。  
+  - [ ] 1.2 在 Dev Notes 中用文字明确：Kill-Switch 只影响 entry 决策，不影响 close/SLTP；Hyperliquid 实盘模式下由交易所负责触发单。  
+  - [ ] 1.3 对照 `tests/test_stop_loss_take_profit.py` 总结当前 SL/TP 触发规则，作为后续测试与实现的权威基线。
+
+- [ ] **Task 2 – 设计并实现 Kill-Switch + SL/TP 集成测试（AC1, AC2, AC3, AC5）**  
+  - [ ] 2.1 在 `tests/test_stop_loss_take_profit.py` 中新增至少 2–3 个用例，显式设置 `risk_control_state.kill_switch_active=True`（或通过注入 / mock）验证：SL/TP 行为不因 Kill-Switch 改变。  
+  - [ ] 2.2 在 `tests/test_risk_control_integration.py` 中新增专门的测试类（例如 `KillSwitchAndStopLossTakeProfitIntegrationTests`），覆盖：  
+       - Kill-Switch 激活 + 有持仓 + 价格触及 SL/TP → 仍发生 close；  
+       - Kill-Switch 未激活时行为与基线一致；  
+       - Hyperliquid `is_live=True` 时，无论 Kill-Switch 状态如何，SL/TP 逻辑保持 no-op。  
+  - [ ] 2.3 如需要，通过 mock `bot.check_stop_loss_take_profit` 与 `TradeExecutor.execute_close` 等，减少对真实交易所连接与 I/O 的依赖。
+
+- [ ] **Task 3 – 最小必要的实现或重构（AC1, AC2, AC3, AC4）**  
+  - [ ] 3.1 在不破坏现有行为的前提下，检查并必要时调整 `_run_iteration()` 中风控检查、SL/TP 检查与 LLM 决策处理的顺序与依赖（保持「先 SL/TP、后 LLM entry/close」的直觉）。  
+  - [ ] 3.2 如发现 Kill-Switch 与 SL/TP 路径间存在隐式耦合或重复判断，做最小重构以保持单一职责，并在 Dev Notes 中记录设计决策。  
+  - [ ] 3.3 仅在确有必要时扩展 CSV/日志字段，用于更好地区分「风险收缩」与「entry 被阻止」事件；所有变更都需在架构文档中补充说明。  
+
+- [ ] **Task 4 – 回归测试与文档更新（AC4, AC5）**  
+  - [ ] 4.1 运行完整测试套件（`./scripts/run_tests.sh`），确保所有 Kill-Switch / SLTP / 执行层相关测试通过。  
+  - [ ] 4.2 如对日志或 CSV schema 有变更，更新 `docs/architecture/07-implementation-patterns.md` 或相关数据文档，保持审计路径清晰。  
+  - [ ] 4.3 在本 Story 的 Change Log 中记录最终实现与测试情况，供后续 Story 与 Epic 回顾使用。
+    ]]></tasks>
+  </story>
+
+  <acceptanceCriteria><![CDATA[
+1. AC1 – Kill-Switch 激活时 SL/TP 检查仍然执行（PRD FR7–FR8 对齐）
+2. AC2 – Kill-Switch 仅阻止 entry，不阻止 close 与 SL/TP
+3. AC3 – Hyperliquid 实盘模式下的 SL/TP 语义与 Kill-Switch 协同
+4. AC4 – 日志与审计的一致性（与 7.2.1 / 7.2.3 对齐）
+5. AC5 – 测试覆盖与回归
+
+（完整文本请参考 Story 文件，对 AC 的实现和验证必须与 Story 完整版本严格对齐，不得增减条目。）
+  ]]></acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+      <doc>
+        <path>docs/prd-risk-control-enhancement.md</path>
+        <title>风控系统增强 - 产品需求文档</title>
+        <section>Kill-Switch 功能 / 日志与审计</section>
+        <snippet>定义了 Kill-Switch 激活后的行为语义：拒绝所有 signal=entry 决策，但继续允许 signal=close 和 SL/TP 检查；并要求所有风控事件在日志与 ai_decisions.csv 中形成可审计记录（FR7–FR8, FR19–FR20）。</snippet>
+      </doc>
+      <doc>
+        <path>docs/epics.md</path>
+        <title>LLM-trader-test - Epic Breakdown</title>
+        <section>Epic 7.2: 风控系统增强（Emergency Controls）</section>
+        <snippet>将 Epic 7.2 拆分为一组 Kill-Switch 相关 Story，包括本 Story 7-2-4，用于在已实现 Kill-Switch 激活/解除与信号过滤的基础上，进一步确保 SL/TP 行为在 Kill-Switch 期间保持一致。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/tech-spec-epic-7-1.md</path>
+        <title>Epic 技术规格: 风控状态管理基础设施</title>
+        <section>Data Models and Contracts / APIs and Workflows</section>
+        <snippet>定义了 RiskControlState 数据结构及 check_risk_limits 接口，并在主循环开始阶段预留风控检查入口，为 Kill-Switch 与每日亏损逻辑提供统一行为层入口，是本 Story 依赖的基础设施。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/7-2-1-实现-kill-switch-激活逻辑.md</path>
+        <title>Story 7.2.1: 实现 Kill-Switch 激活逻辑</title>
+        <section>Acceptance Criteria / Dev Notes</section>
+        <snippet>定义了 Kill-Switch 状态字段、环境变量优先级和 check_risk_limits 返回允许/禁止 entry 的语义，为本 Story 中「仅阻止 entry、不影响 SL/TP」的前置行为提供约束。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/7-2-2-实现-kill-switch-解除逻辑.md</path>
+        <title>Story 7.2.2: 实现 Kill-Switch 解除逻辑</title>
+        <section>Acceptance Criteria / Dev Notes</section>
+        <snippet>补充了 Kill-Switch 解除的状态语义与结构化日志要求，并验证解除后 check_risk_limits 会再次允许 entry，对本 Story 的测试设计（激活与未激活对比）有直接参考价值。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/7-2-3-实现信号过滤逻辑.md</path>
+        <title>Story 7.2.3: 实现信号过滤逻辑</title>
+        <section>Acceptance Criteria / Dev Notes</section>
+        <snippet>明确约定 Kill-Switch 与其他风控结果通过 allow_entry 在 process_ai_decisions 中统一过滤 entry 信号，同时保持 close/hold（以及 SL/TP）在 Kill-Switch 期间继续工作，为本 Story 的行为边界提供权威说明。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/03-data-flow.md</path>
+        <title>架构分片：数据流</title>
+        <section>3.1 实时交易路径</section>
+        <snippet>描述从行情输入、策略分析、LLM 决策到执行与状态持久化的完整数据流，表明 SL/TP 检查位于风控检查之后、LLM 决策之前的主循环早期阶段，是本 Story 需要重点验证的位置。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/07-implementation-patterns.md</path>
+        <title>架构分片：实现模式与一致性规则</title>
+        <section>7.3 数据与格式模式 / 7.8 测试与校验模式</section>
+        <snippet>给出统一的日志格式、数据字段命名与测试策略，要求风控与 SL/TP 相关逻辑提供结构化日志和充分的自动化测试覆盖，本 Story 的日志/测试设计需遵循这些约定。</snippet>
+      </doc>
+    </docs>
+
+    <code>
+      <codeArtifact>
+        <path>bot.py</path>
+        <kind>main-loop</kind>
+        <symbol>_run_iteration</symbol>
+        <lines>623-662</lines>
+        <reason>主交易循环入口，依次调用 check_risk_limits 获取 allow_entry，再调用 check_stop_loss_take_profit() 和 process_ai_decisions(...)，是验证「Kill-Switch 激活时仍执行 SL/TP 检查」的关键位置。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>bot.py</path>
+        <kind>sl-tp-helper</kind>
+        <symbol>check_stop_loss_take_profit</symbol>
+        <lines>451-456</lines>
+        <reason>封装对 execution.routing.check_stop_loss_take_profit_for_positions(...) 的调用，并根据 hyperliquid_trader.is_live 决定是否执行本地 SL/TP 检查，是本 Story 直接受影响的函数。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>execution/routing.py</path>
+        <kind>routing/sl-tp</kind>
+        <symbol>check_stop_loss_take_profit_for_positions</symbol>
+        <lines>475-531</lines>
+        <reason>遍历所有持仓，根据 K 线 high/low 与 stop_loss/profit_target 触发 close 调用；在 Hyperliquid 实盘模式下直接返回，是本 Story 需要验证的 SL/TP 具体实现。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>core/risk_control.py</path>
+        <kind>risk-control</kind>
+        <symbol>check_risk_limits</symbol>
+        <lines>75-125</lines>
+        <reason>统一的风控入口，根据 RiskControlState 与配置决定是否允许 entry（allow_entry）；文档中明确说明不影响 close 与 SL/TP，是本 Story 行为边界的重要依据。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>tests/test_stop_loss_take_profit.py</path>
+        <kind>tests</kind>
+        <symbol>CheckStopLossTakeProfitTests</symbol>
+        <lines>1-180</lines>
+        <reason>覆盖 long/short 仓位在不同 K 线 high/low 下触发 Stop loss / Take profit 的基线行为，以及 Hyperliquid 实盘模式下的 no-op 语义，是本 Story 新增测试的直接扩展点。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>tests/test_risk_control_integration.py</path>
+        <kind>tests</kind>
+        <symbol>RiskControlCheckIntegrationTests / KillSwitchBlocksEntryIntegrationTests 等</symbol>
+        <lines>175-343, 577-775</lines>
+        <reason>验证 check_risk_limits 行为、Kill-Switch 激活/解除与执行层守卫，是构建「Kill-Switch 激活 + SL/TP 仍然工作」端到端集成测试的基础。</reason>
+      </codeArtifact>
+    </code>
+
+    <dependencies>
+      <dependency ecosystem="python" name="pandas" version="2.2.3" />
+      <dependency ecosystem="python" name="numpy" version="2.1.3" />
+      <dependency ecosystem="python" name="requests" version="2.31.0" />
+      <dependency ecosystem="python" name="python-binance" version="1.0.19" />
+      <dependency ecosystem="python" name="hyperliquid-python-sdk" version=">=0.9.0" />
+      <dependency ecosystem="python" name="ccxt" version="(unspecified)" />
+      <dependency ecosystem="python" name="colorama" version="0.4.6" />
+      <dependency ecosystem="python" name="streamlit" version="1.38.0" />
+    </dependencies>
+  </artifacts>
+
+  <constraints><![CDATA[
+- Kill-Switch 语义必须与既有实现保持一致：只通过 check_risk_limits(...) / allow_entry 影响 entry，不得在 SL/TP 路径上新增基于 Kill-Switch 的早退或 short-circuit 分支。
+- SL/TP 相关逻辑应集中在 bot.check_stop_loss_take_profit 与 execution.routing.check_stop_loss_take_profit_for_positions 中，禁止在 strategy/、llm/、display/ 等层新增与 SL/TP 或 Kill-Switch 相关的判断。
+- Hyperliquid 实盘模式下，仍需保持当前「本地 SL/TP 不执行，由交易所原生触发单负责」的语义，本 Story 只能在纸上/回测路径中验证和增强 SL/TP 行为。
+- 任何为区分「风险收缩事件（SL/TP/close）」与「entry 被 Kill-Switch 阻止」而新增的日志或 CSV 字段，必须保持向后兼容，并遵循 docs/architecture/07-implementation-patterns.md 中的数据与日志规范。
+  ]]></constraints>
+
+  <interfaces>
+    <interface>
+      <name>check_risk_limits</name>
+      <kind>function</kind>
+      <signature>check_risk_limits(risk_control_state: RiskControlState, total_equity: Optional[float] = None, iteration_time: Optional[datetime] = None, risk_control_enabled: bool = True) -&gt; bool</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+    <interface>
+      <name>check_stop_loss_take_profit</name>
+      <kind>function</kind>
+      <signature>check_stop_loss_take_profit() -&gt; None</signature>
+      <path>bot.py</path>
+    </interface>
+    <interface>
+      <name>check_stop_loss_take_profit_for_positions</name>
+      <kind>function</kind>
+      <signature>check_stop_loss_take_profit_for_positions(positions: Dict[str, Dict[str, Any]], symbol_to_coin: Dict[str, str], fetch_market_data: Callable[[str], Dict[str, Any]], execute_close: Callable[[str, Dict[str, Any], float], None], hyperliquid_is_live: bool) -&gt; None</signature>
+      <path>execution/routing.py</path>
+    </interface>
+    <interface>
+      <name>process_ai_decisions</name>
+      <kind>function</kind>
+      <signature>process_ai_decisions(decisions: Dict[str, Any], *, allow_entry: bool = True, kill_switch_active: bool = False, kill_switch_reason: Optional[str] = None) -&gt; None</signature>
+      <path>bot.py</path>
+    </interface>
+  </interfaces>
+
+  <tests>
+    <standards><![CDATA[
+- 使用 pytest 作为测试框架，所有测试位于 tests/ 目录下，文件命名为 test_*.py。
+- 风控与 SL/TP 相关测试需覆盖：Kill-Switch 激活/未激活、Hyperliquid 实盘与纸上模式、long/short 仓位在不同 high/low 场景下的行为，并保持现有测试全部通过。
+- 对关键行为（例如 Kill-Switch 激活后 entry 被阻止、SL/TP 仍然触发 close）应通过 caplog 或等价机制断言结构化日志是否产生（如适用），并通过 CSV/状态文件验证审计链条完整。
+    ]]></standards>
+    <locations><![CDATA[
+- tests/test_stop_loss_take_profit.py
+- tests/test_risk_control_integration.py
+- tests/test_risk_control.py
+- 其他功能相关测试文件（根据需要扩展），统一位于 tests/ 目录。
+    ]]></locations>
+    <ideas><![CDATA[
+- AC1：在单元测试中直接调用 bot.check_stop_loss_take_profit()，构造 long/short 仓位和不同 high/low 组合，并在 Kill-Switch 激活/未激活时分别执行，验证触发 SL/TP 的条件与基线行为完全一致。
+- AC2：在集成测试中通过 check_risk_limits(...) 令 allow_entry=False，同时预置持仓与满足 SL/TP 条件的 K 线，运行 _run_iteration() 或等价流程，验证不会产生新的 entry，但 SL/TP 仍然触发 execute_close 调用。
+- AC3：在 Hyperliquid 实盘模式下（hyperliquid_trader.is_live=True）调用 bot.check_stop_loss_take_profit()，断言不会调用 fetch_market_data / execute_close；同时在纸上模式下验证相同场景会正常执行 SL/TP。
+- AC4：如对 trade_history.csv 或日志增加 exit_reason 等字段，可在测试中构造 SL/TP 触发场景，断言相应字段值为 "stop_loss" 或 "take_profit"，并区分于 Kill-Switch 风控阻止事件。
+- AC5：运行完整测试套件（./scripts/run_tests.sh），在增加新测试后确认所有 Kill-Switch / SLTP / 执行层相关测试继续通过，必要时仅调整期望值而不改变既有行为契约。
+    ]]></ideas>
+  </tests>
+</story-context>

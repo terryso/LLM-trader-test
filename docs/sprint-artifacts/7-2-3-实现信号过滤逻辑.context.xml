@@ -1,0 +1,209 @@
+<story-context id=".bmad/bmm/workflows/4-implementation/story-context/template" v="1.0">
+  <metadata>
+    <epicId>7.2</epicId>
+    <storyId>3</storyId>
+    <title>实现信号过滤逻辑</title>
+    <status>drafted</status>
+    <generatedAt>2025-11-30T17:26:00+08:00</generatedAt>
+    <generator>BMAD Story Context Workflow (manual agent execution)</generator>
+    <sourceStoryPath>docs/sprint-artifacts/7-2-3-实现信号过滤逻辑.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA><![CDATA[As a system orchestrating AI trading decisions]]></asA>
+    <iWant><![CDATA[I want to filter entry signals when Kill-Switch is active (or other risk controls block entries)]]></iWant>
+    <soThat><![CDATA[so that no new positions are opened during risk events while close/SLTP paths continue to work normally.]]></soThat>
+    <tasks><![CDATA[
+- [ ] **Task 1 – 梳理并对齐现有信号处理与风控入口（AC1, AC2）**
+  - [ ] 1.1 通读 `bot.py` 中 `_run_iteration()` 与 `process_ai_decisions()` 的最新实现，确认 `check_risk_limits(...)` 的调用时机与返回值含义（尤其是 `allow_entry` 之类的标志）。
+  - [ ] 1.2 绘制一条简化数据流：从风控状态（`RiskControlState`）→ `check_risk_limits(...)` → 主循环 → `process_ai_decisions(...)` → `TradeExecutor`，标注在哪一层应做 entry 过滤。
+  - [ ] 1.3 在 Dev Notes 中明确约定：非 `core/` 层（例如 `bot.py`、`execution/`）**不得**直接读取或修改 `RiskControlState`，一律通过 `check_risk_limits(...)` / `allow_entry` 等抽象传递风控结果。
+
+- [ ] **Task 2 – 在 process_ai_decisions 中实现和收敛 entry 过滤逻辑（AC1, AC2）**
+  - [ ] 2.1 在 `process_ai_decisions(...)` 中使用来自风控层的布尔标志（例如 `allow_entry`），在遍历各资产决策时对 `signal="entry"` 分支做统一判定。
+  - [ ] 2.2 确保在 `allow_entry=False` 时：
+    - 不会调用任何下单相关函数（包括纸上交易和实盘执行路径）；
+    - 若执行层仍有 Kill-Switch 守卫（defense-in-depth），其行为与本 Story 的过滤逻辑保持一致，不产生双重或矛盾日志。
+  - [ ] 2.3 对 `signal="close"` / `signal="hold"` 的处理仅在需要时做最小调整，确保在 `allow_entry=False` 时仍按预期执行。
+
+- [ ] **Task 3 – 补充日志与 ai_decisions.csv 审计记录（AC3, AC4）**
+  - [ ] 3.1 在 entry 被阻止的逻辑分支中添加结构化日志，遵循 `docs/architecture/07-implementation-patterns.md` 中的日志规范（统一前缀与字段顺序）。
+  - [ ] 3.2 在相同分支中调用现有的决策落盘函数（或新增轻量封装），向 `ai_decisions.csv` 写入一条「风控阻止」记录，并在 Dev Notes 中记录所采用的 schema 方案。
+  - [ ] 3.3 若需要扩展 `ai_decisions.csv` 的列集：
+    - 更新相关写入/读取逻辑与架构文档中的字段说明；
+    - 为旧文件或缺少新列的场景提供安全默认值，避免解析失败。
+
+- [ ] **Task 4 – 单元与集成测试（AC2, AC3, AC4, AC5）**
+  - [ ] 4.1 在现有的 Kill-Switch 集成测试基础上，增加至少一个场景：`allow_entry=False` + 存在 entry 信号 → 日志与 CSV 中均有风控阻止记录。
+  - [ ] 4.2 为 `process_ai_decisions(...)` 或其辅助函数新增单元测试，覆盖 allow_entry=True/False 与 signal=entry/close/hold 的组合。
+  - [ ] 4.3 运行完整测试套件（例如 `./scripts/run_tests.sh`），确认无回归；如有必要，更新少量期望值以反映新增日志/CSV 行。
+]]></tasks>
+  </story>
+
+  <acceptanceCriteria><![CDATA[
+1. AC1 – 基于统一风控入口的信号过滤语义（与 check_risk_limits 对齐）
+2. AC2 – Kill-Switch 激活场景下的具体行为（PRD FR7–FR8 对齐）
+3. AC3 – 被阻止 entry 信号的日志与审计（包含原因）
+4. AC4 – 在 ai_decisions.csv 中记录风控阻止事件（PRD FR20 对齐）
+5. AC5 – 测试覆盖与边界条件
+
+（完整文本请参考 Story 文件，对 AC 的实现和验证必须与 Story 完整版本严格对齐，不得增减条目。）
+]]></acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+      <doc>
+        <path>docs/prd-risk-control-enhancement.md</path>
+        <title>风控系统增强 - 产品需求文档</title>
+        <section>Kill-Switch 功能 / 日志与审计</section>
+        <snippet>定义了 Kill-Switch 激活后的行为语义：拒绝所有 signal=entry 决策，但继续允许 signal=close 和 SL/TP 检查；同时要求所有风控事件在日志与 ai_decisions.csv 中形成可审计记录（FR7–FR8, FR19–FR20）。</snippet>
+      </doc>
+      <doc>
+        <path>docs/epic-risk-control-enhancement.md</path>
+        <title>风控系统增强 - Epic 与 Story 分解</title>
+        <section>Epic 7.2 / Story 7.2.3</section>
+        <snippet>将本 Story 描述为在 process_ai_decisions 中对 entry 信号做 Kill-Switch 过滤，并将被跳过的信号记录到日志与 ai_decisions.csv，同时保持 close/hold 正常处理。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/tech-spec-epic-7-1.md</path>
+        <title>Epic 技术规格: 风控状态管理基础设施</title>
+        <section>APIs and Workflows</section>
+        <snippet>定义了 RiskControlState 数据结构及 check_risk_limits 接口，并在主循环开始阶段预留风控检查入口，为后续 Kill-Switch 与每日亏损逻辑提供统一行为层入口。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/epic-7-1-retro-risk-control.md</path>
+        <title>Epic 7.1 回顾：风控状态管理基础设施</title>
+        <section>Key Learnings</section>
+        <snippet>强调「配置 / 状态 / 行为」三层分离以及通过 check_risk_limits 统一风控入口的设计经验，为本 Story 在行为层实现信号过滤提供架构约束与指导。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/7-2-1-实现-kill-switch-激活逻辑.md</path>
+        <title>Story 7.2.1: 实现 Kill-Switch 激活逻辑</title>
+        <section>Acceptance Criteria / Dev Notes</section>
+        <snippet>定义了 Kill-Switch 状态字段、环境变量优先级和 check_risk_limits 返回允许/禁止 entry 的语义；指出在 Kill-Switch 激活时应统一拦截所有 entry 信号并记录原因。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/7-2-2-实现-kill-switch-解除逻辑.md</path>
+        <title>Story 7.2.2: 实现 Kill-Switch 解除逻辑</title>
+        <section>Acceptance Criteria / Dev Notes</section>
+        <snippet>补充了 Kill-Switch 解除时的状态语义与结构化日志要求，并确认解除后 check_risk_limits 再次允许 entry，为本 Story 的信号过滤恢复行为提供前置保障。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/03-data-flow.md</path>
+        <title>架构分片：数据流</title>
+        <section>3.1 实时交易路径</section>
+        <snippet>描述了从行情输入、策略分析、LLM 决策到执行层的完整数据流，表明信号过滤逻辑应位于 LLM 决策之后、执行之前，并与 TradeExecutor/路由层配合。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/06-project-structure-and-mapping.md</path>
+        <title>架构分片：项目结构与映射</title>
+        <section>6.2 PRD 功能块到架构组件的映射</section>
+        <snippet>将「风险控制与资金管理」映射到 execution/routing 与 core/metrics，说明风控与信号过滤应通过 core 和 execution 层协作，而不是分散到策略或 LLM 层。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/07-implementation-patterns.md</path>
+        <title>架构分片：实现模式与一致性规则</title>
+        <section>7.5 生命周期与错误处理模式 / 7.8 测试与校验模式</section>
+        <snippet>定义了统一的日志格式、错误处理与测试策略，要求对类似 Kill-Switch 这类风控路径提供结构化日志和充分的自动化测试覆盖。</snippet>
+      </doc>
+    </docs>
+
+    <code>
+      <codeArtifact>
+        <path>bot.py</path>
+        <kind>main-loop</kind>
+        <symbol>process_ai_decisions</symbol>
+        <lines>377-415</lines>
+        <reason>在主交易循环中消费 LLM 决策并按 allow_entry 控制是否调用 execute_entry，是实现 Story 7.2.3 信号过滤行为的直接落点。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>core/risk_control.py</path>
+        <kind>risk-control</kind>
+        <symbol>check_risk_limits</symbol>
+        <lines>75-125</lines>
+        <reason>统一的风控入口函数，根据 RiskControlState 与配置返回是否允许 entry（allow_entry），是信号过滤逻辑的唯一真源。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>core/state.py</path>
+        <kind>state-management</kind>
+        <symbol>load_state / apply_kill_switch_env_override</symbol>
+        <lines>68-145</lines>
+        <reason>负责加载 portfolio_state.json 并重建 risk_control_state，同时应用 KILL_SWITCH 环境变量优先级，为本 Story 依赖的 Kill-Switch 状态提供一致来源。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>execution/executor.py</path>
+        <kind>executor</kind>
+        <symbol>TradeExecutor.execute_entry</symbol>
+        <lines>128-150</lines>
+        <reason>在执行层实现 Kill-Switch 最终守卫（defense-in-depth），即便上层遗漏检查也会阻止 entry，下游行为需与新的信号过滤逻辑保持一致。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>tests/test_risk_control_integration.py</path>
+        <kind>tests</kind>
+        <symbol>KillSwitchBlocksEntryIntegrationTests 等</symbol>
+        <lines>约 864-939, 999-1090</lines>
+        <reason>覆盖 Kill-Switch 激活时阻止 entry、允许 close/SLTP 以及环境变量优先级等集成场景，为新增信号过滤与 CSV 审计测试提供现成夹具和模式。</reason>
+      </codeArtifact>
+    </code>
+
+    <dependencies>
+      <dependency ecosystem="python" name="pandas" version="2.2.3" />
+      <dependency ecosystem="python" name="numpy" version="2.1.3" />
+      <dependency ecosystem="python" name="requests" version="2.31.0" />
+      <dependency ecosystem="python" name="python-binance" version="1.0.19" />
+      <dependency ecosystem="python" name="hyperliquid-python-sdk" version=">=0.9.0" />
+      <dependency ecosystem="python" name="ccxt" version="(unspecified)" />
+      <dependency ecosystem="python" name="colorama" version="0.4.6" />
+      <dependency ecosystem="python" name="streamlit" version="1.38.0" />
+    </dependencies>
+  </artifacts>
+
+  <constraints><![CDATA[
+- 必须通过 core.risk_control.check_risk_limits(...) 的返回值（allow_entry）来决定是否允许 entry，不允许在 bot.py 或 execution 之外的新位置重复解析 Kill-Switch 状态或环境变量。
+- 非 core 层模块（strategy/、llm/、display/ 等）不得直接访问 RiskControlState 或解析 KILL_SWITCH 环境变量，保持「配置 / 状态 / 行为」三层分离。
+- 信号过滤只影响 entry，不得改变 close 与 SL/TP 路径的语义；check_stop_loss_take_profit 与 TradeExecutor.execute_close 必须在 Kill-Switch 激活期间继续工作。
+- 日志输出需遵循统一格式："%(asctime)s | %(levelname)s | %(message)s"，并在消息中清晰标明被阻止的资产、信号类型和原因，便于后续 grep 与监控。
+]]></constraints>
+
+  <interfaces>
+    <interface>
+      <name>check_risk_limits</name>
+      <kind>function</kind>
+      <signature>check_risk_limits(risk_control_state: RiskControlState, total_equity: Optional[float], iteration_time: Optional[datetime], risk_control_enabled: bool) -> bool</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+    <interface>
+      <name>process_ai_decisions</name>
+      <kind>function</kind>
+      <signature>process_ai_decisions(decisions: Dict[str, Any], *, allow_entry: bool = True) -> None</signature>
+      <path>bot.py</path>
+    </interface>
+    <interface>
+      <name>TradeExecutor.execute_entry</name>
+      <kind>method</kind>
+      <signature>execute_entry(self, coin: str, decision: Dict[str, Any], current_price: float) -> None</signature>
+      <path>execution/executor.py</path>
+    </interface>
+  </interfaces>
+
+  <tests>
+    <standards><![CDATA[
+- 使用 pytest 作为测试框架，所有测试位于 tests/ 目录下，文件命名为 test_*.py。
+- 风控相关测试需覆盖环境变量优先级、状态持久化、Kill-Switch 激活/解除以及 entry 阻止行为，并保持现有测试全部通过。
+- 对关键行为（例如 Kill-Switch 激活/解除与 entry 被阻止）应通过 caplog 或等价机制断言结构化日志是否产生。
+]]></standards>
+    <locations><![CDATA[
+- tests/test_risk_control.py
+- tests/test_risk_control_integration.py
+- tests/test_ai_and_backtest.py
+- 其他功能相关测试文件（根据需要扩展），统一位于 tests/ 目录。
+]]></locations>
+    <ideas><![CDATA[
+- AC1：针对 check_risk_limits 和 process_ai_decisions，构造 allow_entry=True/False 的组合输入，验证当 allow_entry=False 时所有 signal="entry" 都不会触发 execute_entry 调用。
+- AC2：在集成测试中模拟 Kill-Switch 激活场景，运行 _run_iteration()，验证有 entry 决策时不会产生新持仓，但 close 和 SL/TP 路径仍然按预期执行。
+- AC3：在 allow_entry=False 且存在 entry 信号的迭代中，使用 caplog 断言至少产生一条包含 coin、signal、allow_entry、kill_switch_active 的结构化日志。
+- AC4：在相同场景下检查 ai_decisions.csv，验证新增一条可被识别为「被风控阻止的 entry」的记录，并确保旧分析脚本不会因新字段崩溃。
+- AC5：覆盖边界条件：无决策、仅 close/hold 决策、Kill-Switch 未激活（allow_entry=True）等，确认不出现误报或重复记录。
+]]></ideas>
+  </tests>
+</story-context>
