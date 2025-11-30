@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import tempfile
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from unittest import TestCase, mock
 
@@ -23,6 +24,7 @@ from core.risk_control import (
     activate_kill_switch,
     deactivate_kill_switch,
     apply_kill_switch_env_override,
+    update_daily_baseline,
 )
 
 
@@ -339,6 +341,122 @@ class RiskControlStateRestartTests(TestCase):
             )
             self.assertTrue(core_state.risk_control_state.daily_loss_triggered)
             self.assertEqual(core_state.risk_control_state.daily_loss_pct, -20.0)
+
+
+class DailyBaselineIntegrationTests(TestCase):
+    """Integration tests for daily baseline persistence and restart semantics."""
+
+    def setUp(self) -> None:
+        self._orig_balance = core_state.balance
+        self._orig_positions = copy.deepcopy(core_state.positions)
+        self._orig_iteration = core_state.iteration_counter
+        self._orig_risk_control_state = core_state.risk_control_state
+        self._orig_state_json = core_state.STATE_JSON
+
+    def tearDown(self) -> None:
+        core_state.balance = self._orig_balance
+        core_state.positions = copy.deepcopy(self._orig_positions)
+        core_state.iteration_counter = self._orig_iteration
+        core_state.risk_control_state = self._orig_risk_control_state
+        core_state.STATE_JSON = self._orig_state_json
+
+    def test_daily_baseline_persists_across_restart_same_day(self) -> None:
+        """Baseline for the same UTC day should persist across restart and remain unchanged."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "state.json"
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+            # Simulate existing baseline for today and save state
+            core_state.balance = 10000.0
+            core_state.positions = {}
+            core_state.iteration_counter = 1
+            core_state.risk_control_state = RiskControlState(
+                kill_switch_active=False,
+                daily_start_equity=10000.0,
+                daily_start_date=today,
+                daily_loss_pct=0.0,
+                daily_loss_triggered=False,
+            )
+
+            with mock.patch.object(core_state, "STATE_JSON", state_path):
+                core_state.save_state()
+
+            # Simulate restart: reset in-memory state and reload
+            core_state.balance = 0.0
+            core_state.positions = {}
+            core_state.iteration_counter = 0
+            core_state.risk_control_state = RiskControlState()
+
+            with mock.patch.object(core_state, "STATE_JSON", state_path):
+                core_state.load_state()
+
+            # Same-day restart should keep existing baseline before helper call
+            self.assertEqual(core_state.risk_control_state.daily_start_date, today)
+            self.assertEqual(core_state.risk_control_state.daily_start_equity, 10000.0)
+
+            # Calling update_daily_baseline on same day should not reset baseline
+            update_daily_baseline(core_state.risk_control_state, current_equity=9500.0)
+
+            self.assertEqual(core_state.risk_control_state.daily_start_date, today)
+            self.assertEqual(core_state.risk_control_state.daily_start_equity, 10000.0)
+            self.assertEqual(core_state.risk_control_state.daily_loss_pct, 0.0)
+            self.assertFalse(core_state.risk_control_state.daily_loss_triggered)
+
+    def test_daily_baseline_resets_on_cross_day_restart(self) -> None:
+        """Baseline should reset on first iteration after crossing UTC day."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "state.json"
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            previous_date = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+            # Persist state with previous day's baseline
+            core_state.balance = 10000.0
+            core_state.positions = {}
+            core_state.iteration_counter = 1
+            core_state.risk_control_state = RiskControlState(
+                kill_switch_active=False,
+                daily_start_equity=10000.0,
+                daily_start_date=previous_date,
+                daily_loss_pct=-5.0,
+                daily_loss_triggered=True,
+            )
+
+            with mock.patch.object(core_state, "STATE_JSON", state_path):
+                core_state.save_state()
+
+            # Simulate restart: reset in-memory state and reload
+            core_state.balance = 0.0
+            core_state.positions = {}
+            core_state.iteration_counter = 0
+            core_state.risk_control_state = RiskControlState()
+
+            with mock.patch.object(core_state, "STATE_JSON", state_path):
+                core_state.load_state()
+
+            # After load, baseline still reflects previous date
+            self.assertEqual(core_state.risk_control_state.daily_start_date, previous_date)
+            self.assertEqual(core_state.risk_control_state.daily_start_equity, 10000.0)
+
+            # First iteration on new UTC day should reset baseline to new equity
+            new_equity = 9500.0
+            update_daily_baseline(core_state.risk_control_state, current_equity=new_equity)
+
+            self.assertEqual(core_state.risk_control_state.daily_start_date, today)
+            self.assertEqual(core_state.risk_control_state.daily_start_equity, new_equity)
+            self.assertEqual(core_state.risk_control_state.daily_loss_pct, 0.0)
+            self.assertFalse(core_state.risk_control_state.daily_loss_triggered)
+
+            # Persist again and verify JSON reflects updated baseline
+            with mock.patch.object(core_state, "STATE_JSON", state_path):
+                core_state.save_state()
+
+            data = json.loads(state_path.read_text(encoding="utf-8"))
+            self.assertIn("risk_control", data)
+            rc = data["risk_control"]
+            self.assertEqual(rc["daily_start_equity"], new_equity)
+            self.assertEqual(rc["daily_start_date"], today)
+            self.assertEqual(rc["daily_loss_pct"], 0.0)
+            self.assertFalse(rc["daily_loss_triggered"])
 
 
 class KillSwitchEnvOverrideIntegrationTests(TestCase):
@@ -931,10 +1049,12 @@ class KillSwitchDeactivationIntegrationTests(TestCase):
             self.assertEqual(core_state.risk_control_state.kill_switch_reason, "runtime:resume")
 
             # Verify check_risk_limits returns True (entry allowed)
+            # Note: Disable daily_loss_limit to avoid triggering it with 9500/10000 = -5%
             result = check_risk_limits(
                 risk_control_state=core_state.risk_control_state,
                 total_equity=9500.0,
                 risk_control_enabled=True,
+                daily_loss_limit_enabled=False,
             )
             self.assertTrue(result)
 
@@ -1538,6 +1658,222 @@ class KillSwitchAndStopLossTakeProfitIntegrationTests(TestCase):
             {"justification": "Stop loss hit"},
             90.0,
         )
+
+
+class DailyLossLimitNotificationIntegrationTests(TestCase):
+    """Integration tests for daily loss limit notification (Story 7.3.4).
+
+    Covers:
+    - AC2: Notification triggered only on first daily loss limit trigger
+    - AC3: Error handling in notification path
+    - AC4: Integration with check_daily_loss_limit and check_risk_limits
+    """
+
+    def test_check_daily_loss_limit_calls_notify_fn_on_first_trigger(self) -> None:
+        """AC2: notify_fn should be called exactly once when threshold is first reached."""
+        from core.risk_control import check_daily_loss_limit, RiskControlState
+
+        state = RiskControlState(
+            kill_switch_active=False,
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+            daily_loss_pct=0.0,
+            daily_loss_triggered=False,
+        )
+
+        notify_calls = []
+
+        def mock_notify(loss_pct, limit_pct, daily_start_equity, current_equity):
+            notify_calls.append({
+                "loss_pct": loss_pct,
+                "limit_pct": limit_pct,
+                "daily_start_equity": daily_start_equity,
+                "current_equity": current_equity,
+            })
+
+        # First call: threshold reached (-6% <= -5%)
+        result = check_daily_loss_limit(
+            state=state,
+            current_equity=9400.0,  # -6% loss
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+            risk_control_enabled=True,
+            positions_count=0,
+            notify_fn=mock_notify,
+        )
+
+        self.assertTrue(result)  # Kill-Switch was triggered
+        self.assertEqual(len(notify_calls), 1)  # Notification called once
+        self.assertAlmostEqual(notify_calls[0]["loss_pct"], -6.0, places=1)
+        self.assertEqual(notify_calls[0]["limit_pct"], 5.0)
+        self.assertEqual(notify_calls[0]["daily_start_equity"], 10000.0)
+        self.assertEqual(notify_calls[0]["current_equity"], 9400.0)
+
+    def test_check_daily_loss_limit_does_not_notify_on_subsequent_calls(self) -> None:
+        """AC2: notify_fn should NOT be called on subsequent iterations after first trigger."""
+        from core.risk_control import check_daily_loss_limit, RiskControlState
+
+        state = RiskControlState(
+            kill_switch_active=True,  # Already active
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+            daily_loss_pct=-6.0,
+            daily_loss_triggered=True,  # Already triggered
+        )
+
+        notify_calls = []
+
+        def mock_notify(loss_pct, limit_pct, daily_start_equity, current_equity):
+            notify_calls.append(True)
+
+        # Second call: threshold still exceeded but already triggered
+        result = check_daily_loss_limit(
+            state=state,
+            current_equity=9300.0,  # -7% loss (even worse)
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+            risk_control_enabled=True,
+            positions_count=0,
+            notify_fn=mock_notify,
+        )
+
+        self.assertFalse(result)  # No new trigger
+        self.assertEqual(len(notify_calls), 0)  # No notification
+
+    def test_check_risk_limits_passes_notify_fn_to_daily_loss_check(self) -> None:
+        """AC4: check_risk_limits should pass notify_daily_loss_fn to check_daily_loss_limit."""
+        from core.risk_control import check_risk_limits, RiskControlState
+
+        state = RiskControlState(
+            kill_switch_active=False,
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+            daily_loss_pct=0.0,
+            daily_loss_triggered=False,
+        )
+
+        notify_calls = []
+
+        def mock_notify(loss_pct, limit_pct, daily_start_equity, current_equity):
+            notify_calls.append({
+                "loss_pct": loss_pct,
+                "limit_pct": limit_pct,
+            })
+
+        # Call check_risk_limits with notify callback
+        result = check_risk_limits(
+            risk_control_state=state,
+            total_equity=9400.0,  # -6% loss
+            risk_control_enabled=True,
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+            positions_count=0,
+            notify_daily_loss_fn=mock_notify,
+        )
+
+        self.assertFalse(result)  # Entry blocked
+        self.assertEqual(len(notify_calls), 1)  # Notification was called
+
+    def test_notification_failure_does_not_affect_kill_switch_activation(self) -> None:
+        """AC3: Notification failure should not prevent Kill-Switch activation."""
+        from core.risk_control import check_daily_loss_limit, RiskControlState
+
+        state = RiskControlState(
+            kill_switch_active=False,
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+            daily_loss_pct=0.0,
+            daily_loss_triggered=False,
+        )
+
+        def failing_notify(loss_pct, limit_pct, daily_start_equity, current_equity):
+            raise Exception("Network error - Telegram unavailable")
+
+        # Call with failing notify function
+        with self.assertLogs(level=logging.ERROR) as cm:
+            result = check_daily_loss_limit(
+                state=state,
+                current_equity=9400.0,  # -6% loss
+                daily_loss_limit_enabled=True,
+                daily_loss_limit_pct=5.0,
+                risk_control_enabled=True,
+                positions_count=0,
+                notify_fn=failing_notify,
+            )
+
+        # Kill-Switch should still be activated despite notification failure
+        self.assertTrue(result)
+        self.assertTrue(state.kill_switch_active)
+        self.assertTrue(state.daily_loss_triggered)
+
+        # Error should be logged
+        self.assertTrue(
+            any("Failed to send daily loss limit notification" in msg for msg in cm.output),
+            f"Expected notification error log, got: {cm.output}",
+        )
+
+    def test_notification_not_called_when_telegram_not_configured(self) -> None:
+        """AC2: When Telegram is not configured, callback should be None."""
+        from notifications.telegram import create_daily_loss_limit_notify_callback
+
+        # No bot_token
+        callback = create_daily_loss_limit_notify_callback(
+            bot_token="",
+            chat_id="123456",
+        )
+        self.assertIsNone(callback)
+
+        # No chat_id
+        callback = create_daily_loss_limit_notify_callback(
+            bot_token="test_token",
+            chat_id="",
+        )
+        self.assertIsNone(callback)
+
+    def test_end_to_end_daily_loss_trigger_with_notification(self) -> None:
+        """End-to-end test: Daily loss trigger → Kill-Switch activation → Notification."""
+        from core.risk_control import check_risk_limits, update_daily_baseline, RiskControlState
+        from notifications.telegram import create_daily_loss_limit_notify_callback
+        from unittest.mock import MagicMock
+
+        # Create fresh state
+        state = RiskControlState()
+
+        # Simulate first iteration: set daily baseline
+        update_daily_baseline(state, current_equity=10000.0)
+        self.assertEqual(state.daily_start_equity, 10000.0)
+        self.assertFalse(state.kill_switch_active)
+
+        # Create mock notification callback
+        mock_send = MagicMock()
+        notify_callback = create_daily_loss_limit_notify_callback(
+            bot_token="test_token",
+            chat_id="123456",
+            send_fn=mock_send,
+        )
+        self.assertIsNotNone(notify_callback)
+
+        # Simulate iteration with significant loss (-6%)
+        result = check_risk_limits(
+            risk_control_state=state,
+            total_equity=9400.0,
+            risk_control_enabled=True,
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+            positions_count=2,
+            notify_daily_loss_fn=notify_callback,
+        )
+
+        # Verify Kill-Switch was activated
+        self.assertFalse(result)  # Entry blocked
+        self.assertTrue(state.kill_switch_active)
+        self.assertTrue(state.daily_loss_triggered)
+
+        # Verify notification was sent
+        mock_send.assert_called_once()
+        call_kwargs = mock_send.call_args[1]
+        self.assertEqual(call_kwargs["parse_mode"], "MarkdownV2")
+        self.assertIn("-6", call_kwargs["text"])  # Loss percentage in message
 
 
 if __name__ == "__main__":  # pragma: no cover

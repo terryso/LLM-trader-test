@@ -397,6 +397,156 @@ def notify_kill_switch_deactivated(
     return True
 
 
+# ──────────────────────── DAILY LOSS LIMIT NOTIFICATIONS ────────────────────────
+
+
+def build_daily_loss_limit_triggered_message(
+    *,
+    loss_pct: float,
+    limit_pct: float,
+    daily_start_equity: float,
+    current_equity: float,
+) -> str:
+    """Build the Telegram message for daily loss limit trigger.
+
+    This function is the integration point for Story 7.3.4 to customize
+    the notification message format.
+
+    Args:
+        loss_pct: Current daily loss percentage (negative value, e.g., -6.2).
+        limit_pct: Configured daily loss limit threshold (positive value, e.g., 5.0).
+        daily_start_equity: Starting equity for the current day.
+        current_equity: Current total equity.
+
+    Returns:
+        Formatted Markdown message string for Telegram.
+    """
+    loss_amount = daily_start_equity - current_equity
+
+    message = (
+        f"⚠️ *每日亏损限制已触发*\n\n"
+        f"*当日亏损:* `{loss_pct:.2f}%`\n"
+        f"*亏损阈值:* `\\-{limit_pct:.2f}%`\n"
+        f"*今日起始权益:* `${daily_start_equity:,.2f}`\n"
+        f"*当前权益:* `${current_equity:,.2f}`\n"
+        f"*亏损金额:* `${loss_amount:,.2f}`\n\n"
+        f"🚨 Kill\\-Switch 已自动激活，新开仓信号已被阻止。\n\n"
+        f"💡 恢复交易请使用: `/resume confirm`\n"
+        f"📊 查看状态请使用: `/status`"
+    )
+    return message
+
+
+def notify_daily_loss_limit_triggered(
+    *,
+    loss_pct: float,
+    limit_pct: float,
+    daily_start_equity: float,
+    current_equity: float,
+    bot_token: str,
+    chat_id: str,
+    send_fn: Optional[Callable[..., None]] = None,
+) -> bool:
+    """Send daily loss limit trigger notification to Telegram.
+
+    This is the integration point for Story 7.3.4. The function handles
+    the complete notification flow including:
+    - Checking if Telegram is configured
+    - Building the message
+    - Sending via the provided send function or default
+
+    Args:
+        loss_pct: Current daily loss percentage (negative value).
+        limit_pct: Configured daily loss limit threshold (positive value).
+        daily_start_equity: Starting equity for the current day.
+        current_equity: Current total equity.
+        bot_token: Telegram bot token.
+        chat_id: Telegram chat ID.
+        send_fn: Optional custom send function for testing.
+
+    Returns:
+        True if notification was sent (or attempted), False if skipped due to
+        missing configuration.
+    """
+    if not bot_token or not chat_id:
+        logging.info(
+            "Daily loss limit notification skipped: Telegram not configured "
+            "(bot_token=%s, chat_id=%s)",
+            "set" if bot_token else "missing",
+            "set" if chat_id else "missing",
+        )
+        return False
+
+    message = build_daily_loss_limit_triggered_message(
+        loss_pct=loss_pct,
+        limit_pct=limit_pct,
+        daily_start_equity=daily_start_equity,
+        current_equity=current_equity,
+    )
+
+    if send_fn is not None:
+        send_fn(
+            bot_token=bot_token,
+            default_chat_id=chat_id,
+            text=message,
+            parse_mode="MarkdownV2",
+        )
+    else:
+        send_telegram_message(
+            bot_token=bot_token,
+            default_chat_id=chat_id,
+            text=message,
+            parse_mode="MarkdownV2",
+        )
+
+    logging.info(
+        "Daily loss limit notification sent: loss_pct=%.2f%%, limit_pct=%.2f%%",
+        loss_pct,
+        limit_pct,
+    )
+    return True
+
+
+def create_daily_loss_limit_notify_callback(
+    bot_token: str,
+    chat_id: str,
+    send_fn: Optional[Callable[..., None]] = None,
+) -> Optional[Callable[[float, float, float, float], None]]:
+    """Create notification callback for daily loss limit trigger.
+
+    This factory function creates a properly configured callback that can be
+    passed to check_daily_loss_limit function.
+
+    Args:
+        bot_token: Telegram bot token.
+        chat_id: Telegram chat ID.
+        send_fn: Optional custom send function for testing.
+
+    Returns:
+        A callback function or None if Telegram is not configured.
+    """
+    if not bot_token or not chat_id:
+        return None
+
+    def notify(
+        loss_pct: float,
+        limit_pct: float,
+        daily_start_equity: float,
+        current_equity: float,
+    ) -> None:
+        notify_daily_loss_limit_triggered(
+            loss_pct=loss_pct,
+            limit_pct=limit_pct,
+            daily_start_equity=daily_start_equity,
+            current_equity=current_equity,
+            bot_token=bot_token,
+            chat_id=chat_id,
+            send_fn=send_fn,
+        )
+
+    return notify
+
+
 def create_kill_switch_notify_callbacks(
     bot_token: str,
     chat_id: str,

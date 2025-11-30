@@ -57,7 +57,7 @@ from core.metrics import (
     calculate_total_margin_for_positions,
     format_leverage_display,
 )
-from core.risk_control import RiskControlState
+from core.risk_control import RiskControlState, calculate_daily_loss_pct
 
 __all__ = [
     # State
@@ -113,4 +113,5 @@ __all__ = [
     "format_leverage_display",
     # Risk Control
     "RiskControlState",
+    "calculate_daily_loss_pct",
 ]

@@ -81,7 +81,7 @@ from core.state import (
     save_state as _core_save_state,
     risk_control_state as _risk_control_state,
 )
-from core.risk_control import check_risk_limits
+from core.risk_control import check_risk_limits, update_daily_baseline
 
 # Module-level state references (for test compatibility)
 positions = _core_state.positions
@@ -110,7 +110,9 @@ from notifications.logging import (
 )
 from notifications.telegram import (
     send_telegram_message as _send_telegram_message,
+    create_daily_loss_limit_notify_callback,
 )
+from core.trading_loop import log_risk_control_event
 
 # ───────────────────────── METRICS ─────────────────────────
 from core.metrics import (
@@ -640,11 +642,30 @@ def _run_iteration() -> None:
     
     # Risk control check (before market data and LLM calls)
     # Returns False if Kill-Switch is active (entry trades should be blocked)
+    total_equity = calculate_total_equity()
+
+    if RISK_CONTROL_ENABLED:
+        update_daily_baseline(
+            _core_state.risk_control_state,
+            current_equity=total_equity,
+        )
+
+    # Create notification callback for daily loss limit (if Telegram configured)
+    daily_loss_notify_fn = create_daily_loss_limit_notify_callback(
+        bot_token=TELEGRAM_BOT_TOKEN,
+        chat_id=TELEGRAM_CHAT_ID,
+    )
+
     allow_entry = check_risk_limits(
         risk_control_state=_core_state.risk_control_state,
-        total_equity=calculate_total_equity(),
+        total_equity=total_equity,
         iteration_time=get_current_time(),
         risk_control_enabled=RISK_CONTROL_ENABLED,
+        daily_loss_limit_enabled=DAILY_LOSS_LIMIT_ENABLED,
+        daily_loss_limit_pct=DAILY_LOSS_LIMIT_PCT,
+        positions_count=len(positions),
+        notify_daily_loss_fn=daily_loss_notify_fn,
+        record_event_fn=log_risk_control_event,
     )
     
     # SL/TP checks always run, even when Kill-Switch is active (AC3)

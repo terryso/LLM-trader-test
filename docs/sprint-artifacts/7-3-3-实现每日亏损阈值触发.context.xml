@@ -1,0 +1,221 @@
+<story-context id=".bmad/bmm/workflows/4-implementation/story-context/template" v="1.0">
+  <metadata>
+    <epicId>7.3</epicId>
+    <storyId>3</storyId>
+    <title>实现每日亏损阈值触发</title>
+    <status>drafted</status>
+    <generatedAt>2025-11-30T22:59:00+08:00</generatedAt>
+    <generator>BMAD Story Context Workflow (manual agent execution)</generator>
+    <sourceStoryPath>docs/sprint-artifacts/7-3-3-实现每日亏损阈值触发.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA><![CDATA[As a system]]></asA>
+    <iWant><![CDATA[I want to automatically activate Kill-Switch when the configured daily loss limit is reached]]></iWant>
+    <soThat><![CDATA[so that further losses are prevented in a predictable and auditable way.]]></soThat>
+    <tasks><![CDATA[
+- [ ] **Task 1 – 实现每日亏损阈值检查与 Kill-Switch 触发逻辑（AC1, AC2）**  
+  - [ ] 1.1 在 `core/risk_control.py` 中新增或扩展 `check_daily_loss_limit(state: RiskControlState, current_equity: float) -> bool`：  
+        - 调用 `calculate_daily_loss_pct(...)` 获取 `loss_pct` 并更新 `state.daily_loss_pct`；  
+        - 在 `DAILY_LOSS_LIMIT_ENABLED=False` / `RISK_CONTROL_ENABLED=False` / `daily_start_equity` 无效时直接返回 `False`；  
+        - 在有效场景下基于 `loss_pct <= -DAILY_LOSS_LIMIT_PCT` 判断是否触发阈值，并按 AC1 更新 `daily_loss_triggered` 与 Kill-Switch 状态。  
+  - [ ] 1.2 将 `check_daily_loss_limit(...)` 集成到现有风控入口（例如 `check_risk_limits(...)`）中，保证调用顺序与 Story 7.3.1/7.3.2 已确定的模式一致，并在 Dev Notes 中记录最终设计。  
+
+- [ ] **Task 2 – 日志、风控事件记录与通知集成点预留（AC3）**  
+  - [ ] 2.1 在首次触发每日亏损阈值时，使用统一的 logging 体系记录一条结构化日志，包含亏损百分比、阈值、基准与当前权益等关键字段。  
+  - [ ] 2.2 在适当位置将本次每日亏损触发事件记录到 `ai_decisions.csv` 或等价风控事件流中（`action="RISK_CONTROL"` + 详细原因），满足 PRD FR20 要求。  
+  - [ ] 2.3 在 `check_daily_loss_limit(...)` 中调用 `notify_daily_loss_limit_triggered(...)` 或等价函数，为 Story 7.3.4 提供稳定的通知集成点，并在 Dev Notes 中说明所需参数及调用约定。  
+
+- [ ] **Task 3 – 单元与集成测试（AC4）**  
+  - [ ] 3.1 在 `tests/test_risk_control.py` 中新增 `TestCheckDailyLossLimit` 测试类，覆盖正常、未启用、基准无效、首次触发、多次调用等场景，并对 `activate_kill_switch` 的调用次数进行断言。  
+  - [ ] 3.2 视需要在 `tests/test_risk_control_integration.py` 中新增集成测试，模拟完整一轮 `_run_iteration()` 或等价流程，从未触发到触发每日亏损阈值，验证持久化与 Kill-Switch 行为。  
+  - [ ] 3.3 运行 `./scripts/run_tests.sh`，确保所有测试（含既有 Kill-Switch / 日亏相关测试）全部通过，并在出现边界问题时通过 Dev Notes 记录决策。  
+    ]]></tasks>
+  </story>
+
+  <acceptanceCriteria><![CDATA[
+1. AC1 – 在 `core/risk_control.py` 中提供 `check_daily_loss_limit(state, current_equity)` 或等价 helper，内部复用 `calculate_daily_loss_pct(...)`，在每日亏损达到阈值（`loss_pct <= -DAILY_LOSS_LIMIT_PCT`）且此前未触发时，将 `daily_loss_triggered` 设为 True 并调用 `activate_kill_switch(...)` 激活 Kill-Switch。  
+2. AC2 – 与现有 Kill-Switch / 风控流程保持一致：每日亏损阈值检查作为 `check_risk_limits(...)` 或等价入口的一部分，与 Story 7.3.1/7.3.2 已建立的顺序兼容，不直接修改 Kill-Switch 语义或覆盖其它触发原因。  
+3. AC3 – 首次触发每日亏损阈值时，记录结构化日志与风控事件（RISK_CONTROL 类型），并调用通知 helper（如 `notify_daily_loss_limit_triggered(...)`）为 Story 7.3.4 提供输入，日志内容包含亏损百分比、阈值与基准/当前权益等信息。  
+4. AC4 – 在 `tests/test_risk_control.py` 与必要的集成测试中提供充分覆盖：包括未启用场景、无效基准、正常/边界亏损场景、首次触发与重复调用行为，所有测试通过 `./scripts/run_tests.sh`，且不破坏既有 Kill-Switch / 每日基准 / 每日亏损计算测试。  
+
+（完整 AC 文本见 Story 文件，实现与验证必须与其保持一一对应，不得增删条目。）
+  ]]></acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+      <doc>
+        <path>docs/prd-risk-control-enhancement.md</path>
+        <title>风控系统增强 - 产品需求文档</title>
+        <section>每日亏损限制功能</section>
+        <snippet>定义了每日亏损限制的整体行为（FR12–FR18），包括通过 DAILY_LOSS_LIMIT_PCT 配置每日最大亏损百分比、在每次迭代计算当日权益变化百分比、在达到阈值时自动激活 Kill-Switch，并发送包含详细信息的通知。本 Story 聚焦其中「达到阈值时自动暂停交易」的触发逻辑。</snippet>
+      </doc>
+      <doc>
+        <path>docs/epic-risk-control-enhancement.md</path>
+        <title>风控系统增强 - Epic 与 Story 分解</title>
+        <section>Epic 7.3 / Story 7.3.3</section>
+        <snippet>将 Epic 7.3 拆分为四个 Story，其中 7.3.3 要求在每次迭代中检查 `daily_loss_pct` 是否小于等于 `-DAILY_LOSS_LIMIT_PCT`，若条件满足且尚未触发，则调用 `activate_kill_switch(...)` 并发送每日亏损通知，是每日基准与每日亏损计算之后的阈值触发层。</snippet>
+      </doc>
+      <doc>
+        <path>docs/epics.md</path>
+        <title>LLM-trader-test - Epic Breakdown</title>
+        <section>Epic 7.3: 每日亏损限制功能（Post-MVP）</section>
+        <snippet>说明 Epic 7.3 下四个 Story（7-3-1~7-3-4）的职责分工：先记录每日基准、再计算每日亏损百分比、然后在达到阈值时自动激活 Kill-Switch，并最终向用户发送详细通知。本 Story位于阈值触发这一中间层。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/7-3-1-实现每日起始权益记录.md</path>
+        <title>Story 7.3.1: 实现每日起始权益记录</title>
+        <section>Acceptance Criteria / Dev Notes</section>
+        <snippet>定义并实现了 `update_daily_baseline(...)` helper，在每个自然日维护 `daily_start_equity` / `daily_start_date` 与重置 `daily_loss_pct` / `daily_loss_triggered`，为本 Story 的每日亏损阈值检查提供可靠的基准数据。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/7-3-2-实现每日亏损百分比计算.md</path>
+        <title>Story 7.3.2: 实现每日亏损百分比计算</title>
+        <section>Acceptance Criteria / Dev Notes</section>
+        <snippet>实现了 `calculate_daily_loss_pct(state, current_equity)` helper，基于 `daily_start_equity` 与当前权益计算当日亏损百分比，并处理 0/None/负数等边界场景，是本 Story 阈值触发逻辑的直接输入来源。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/06-project-structure-and-mapping.md</path>
+        <title>架构分片：项目结构与映射</title>
+        <section>6.2 PRD 功能块到架构组件的映射</section>
+        <snippet>将「风险控制与资金管理」映射到 `core/state.py`、`core/persistence.py` 与相关测试，强调风控逻辑（包括每日亏损限制）应集中在 core 层实现，并通过主循环入口 `bot.py` 统一接入。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/07-implementation-patterns.md</path>
+        <title>架构分片：实现模式与一致性规则</title>
+        <section>7.3 数据与格式模式 / 7.8 测试与校验模式</section>
+        <snippet>规定统一的时间/日志/测试模式：使用 UTC ISO 8601 时间、结构化日志与 pytest 测试，本 Story 中每日亏损阈值触发的日志与测试需遵循这些一致性规则。</snippet>
+      </doc>
+    </docs>
+
+    <code>
+      <codeArtifact>
+        <path>core/risk_control.py</path>
+        <kind>risk-control</kind>
+        <symbol>RiskControlState / update_daily_baseline / calculate_daily_loss_pct / check_risk_limits / activate_kill_switch / deactivate_kill_switch</symbol>
+        <lines>17-232</lines>
+        <reason>集中定义每日亏损相关字段与逻辑：`update_daily_baseline` 负责每日基准维持，`calculate_daily_loss_pct` 负责每日盈亏百分比计算，`check_risk_limits` 作为主循环风控入口，`activate_kill_switch` / `deactivate_kill_switch` 管理 Kill-Switch 状态，是实现每日亏损阈值检查与触发逻辑的核心位置。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>bot.py</path>
+        <kind>main-loop</kind>
+        <symbol>_run_iteration</symbol>
+        <lines>623-656</lines>
+        <reason>在单轮迭代开始时计算 `total_equity`，调用 `update_daily_baseline(...)` 与 `check_risk_limits(...)`，将每日亏损阈值检查集成到此处可以保证在 LLM 调用与执行前进行风险控制，是 Story 7.3.3 集成交互的关键入口。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>config/settings.py</path>
+        <kind>config</kind>
+        <symbol>RISK_CONTROL_ENABLED / DAILY_LOSS_LIMIT_ENABLED / DAILY_LOSS_LIMIT_PCT</symbol>
+        <lines>592-610</lines>
+        <reason>集中定义风控开关与每日亏损阈值配置，包括 DAILY_LOSS_LIMIT_PCT 的取值范围验证，本 Story 在实现阈值比较与行为时必须与这些配置项保持一致。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>tests/test_risk_control.py</path>
+        <kind>tests</kind>
+        <symbol>TestUpdateDailyBaseline / TestCalculateDailyLossPct / (to add) TestCheckDailyLossLimit</symbol>
+        <lines>563-812</lines>
+        <reason>已覆盖每日基准更新与每日亏损百分比计算逻辑，本 Story 需要在此文件新增 `TestCheckDailyLossLimit`，沿用现有测试风格验证阈值比较与 Kill-Switch 触发行为。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>tests/test_risk_control_integration.py</path>
+        <kind>tests</kind>
+        <symbol>DailyBaselineIntegrationTests / RiskControlPersistenceIntegrationTests</symbol>
+        <lines>346-459</lines>
+        <reason>验证每日基准在重启与跨日场景下的持久化与重建语义，为扩展集成测试以覆盖「日亏达到阈值 → Kill-Switch 激活 → 状态持久化 → 重启恢复」提供现成夹具与模式。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>data/ai_decisions.csv</path>
+        <kind>data-schema</kind>
+        <symbol>RISK_CONTROL action rows</symbol>
+        <lines>n/a</lines>
+        <reason>PRD 要求将风控事件（包括每日亏损阈值触发）记录到 ai_decisions.csv 中，本 Story 在实现 AC3 时需要保证新增的 RISK_CONTROL 事件行与现有 schema 兼容。</reason>
+      </codeArtifact>
+    </code>
+
+    <dependencies>
+      <dependency ecosystem="python" name="pandas" version="2.2.3" />
+      <dependency ecosystem="python" name="numpy" version="2.1.3" />
+      <dependency ecosystem="python" name="requests" version="2.31.0" />
+      <dependency ecosystem="python" name="python-binance" version="1.0.19" />
+      <dependency ecosystem="python" name="hyperliquid-python-sdk" version=">=0.9.0" />
+      <dependency ecosystem="python" name="ccxt" version="(unspecified)" />
+      <dependency ecosystem="python" name="colorama" version="0.4.6" />
+      <dependency ecosystem="python" name="streamlit" version="1.38.0" />
+    </dependencies>
+  </artifacts>
+
+  <constraints><![CDATA[
+- 每日亏损阈值检查必须建立在已正确维护的每日基准与每日亏损百分比之上：不得在本 Story 中重新实现每日基准或百分比计算逻辑，应始终复用 `update_daily_baseline(...)` 与 `calculate_daily_loss_pct(...)`。  
+- 阈值比较逻辑必须严格遵守 PRD/Epic 约定：以 `loss_pct <= -DAILY_LOSS_LIMIT_PCT` 为触发条件（负值代表亏损），并保证仅在 `daily_loss_triggered` 由 False 变为 True 时触发 Kill-Switch 与通知，以避免重复触发。  
+- 本 Story 不得修改 Kill-Switch 核心语义：Kill-Switch 仍然只阻止新开仓，保留 close 与 SL/TP 行为；其它激活路径（环境变量、Telegram 命令等）仍然有效，且每日亏损触发原因不能静默覆盖更具体的手动原因。  
+- 日志与风控事件记录需遵守 `docs/architecture/07-implementation-patterns.md` 中的统一格式：使用结构化字段（包括原因、百分比、阈值与时间戳），并保持噪声可控（例如 INFO/WARNING 级别仅在首次触发时输出）。  
+- 阈值检查逻辑不得引入额外的外部 I/O 或网络调用，应保持 O(1) 内存与简单算术操作，避免在主循环早期成为性能或可靠性瓶颈。  
+  ]]></constraints>
+
+  <interfaces>
+    <interface>
+      <name>RiskControlState</name>
+      <kind>dataclass</kind>
+      <signature>class RiskControlState(kill_switch_active: bool = False, kill_switch_reason: Optional[str] = None, kill_switch_triggered_at: Optional[str] = None, daily_start_equity: Optional[float] = None, daily_start_date: Optional[str] = None, daily_loss_pct: float = 0.0, daily_loss_triggered: bool = False)</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+    <interface>
+      <name>update_daily_baseline</name>
+      <kind>function</kind>
+      <signature>update_daily_baseline(state: RiskControlState, current_equity: float) -&gt; None</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+    <interface>
+      <name>calculate_daily_loss_pct</name>
+      <kind>function</kind>
+      <signature>calculate_daily_loss_pct(state: RiskControlState, current_equity: float) -&gt; float</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+    <interface>
+      <name>check_daily_loss_limit</name>
+      <kind>function (to be implemented)</kind>
+      <signature>check_daily_loss_limit(state: RiskControlState, current_equity: float) -&gt; bool</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+    <interface>
+      <name>activate_kill_switch</name>
+      <kind>function</kind>
+      <signature>activate_kill_switch(state: RiskControlState, reason: str, triggered_at: Optional[datetime] = None, *, positions_count: int = 0, notify_fn: Optional[Callable[[str, str, int], None]] = None) -&gt; RiskControlState</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+    <interface>
+      <name>deactivate_kill_switch</name>
+      <kind>function</kind>
+      <signature>deactivate_kill_switch(state: RiskControlState, reason: str = "runtime:resume", total_equity: Optional[float] = None, *, notify_fn: Optional[Callable[[str, str], None]] = None) -&gt; RiskControlState</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+    <interface>
+      <name>check_risk_limits</name>
+      <kind>function</kind>
+      <signature>check_risk_limits(risk_control_state: RiskControlState, total_equity: Optional[float] = None, iteration_time: Optional[datetime] = None, risk_control_enabled: bool = True) -&gt; bool</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+  </interfaces>
+
+  <tests>
+    <standards><![CDATA[
+- 使用 pytest 作为测试框架，所有测试位于 `tests/` 目录中，文件命名为 `test_*.py`。  
+- 风控相关测试应覆盖配置开关、状态持久化、Kill-Switch 激活/解除与 Env override 等行为，本 Story 新增的每日亏损阈值检查测试应在此基础上扩展，而不是重复既有用例。  
+- 新增测试需验证：在正常、未启用与无效基准场景下 `check_daily_loss_limit(...)` 的返回值、状态更新与日志行为符合 Story AC 与 PRD 要求；所有测试通过 `./scripts/run_tests.sh`。  
+    ]]></standards>
+    <locations><![CDATA[
+- tests/test_risk_control.py  
+- tests/test_risk_control_integration.py  
+- data/ai_decisions.csv（用于验证 RISK_CONTROL 事件记录的输出效果）  
+    ]]></locations>
+    <ideas><![CDATA[
+- AC1：在 `tests/test_risk_control.py` 中构造多组 `RiskControlState`，覆盖正常与边界场景：  
+  - `DAILY_LOSS_LIMIT_ENABLED=True`、有效 `daily_start_equity`，分别令 `loss_pct` 高于/低于/等于 `-DAILY_LOSS_LIMIT_PCT`，断言是否触发 Kill-Switch 与更新 `daily_loss_triggered`。  
+  - `DAILY_LOSS_LIMIT_ENABLED=False` 或 `RISK_CONTROL_ENABLED=False` 时，调用 `check_daily_loss_limit(...)` 应立即返回 False，不修改 Kill-Switch 状态。  
+- AC2：在集成测试中复用 `DailyBaselineIntegrationTests` 的持久化夹具，模拟从正常亏损到超过阈值的过程，验证在达到阈值当轮迭代中 Kill-Switch 被激活，且状态在 `portfolio_state.json` 中正确持久化并在重启后恢复。  
+- AC3：在单元或集成测试中使用 caplog 捕获日志，断言首次触发每日亏损阈值时包含结构化字段（亏损百分比、阈值、基准与当前权益）；同时检查 ai_decisions.csv 中记录到带有 RISK_CONTROL action 的事件行（可通过对 logging/CSV 写入函数打桩或使用临时数据目录实现）。  
+- AC4：运行 `./scripts/run_tests.sh`，确认在增加新测试与逻辑后，所有既有 Kill-Switch / 每日基准 / 每日亏损计算相关测试仍全部通过，如有期望数值变更需在文档与测试断言中更新说明。  
+    ]]></ideas>
+  </tests>
+</story-context>

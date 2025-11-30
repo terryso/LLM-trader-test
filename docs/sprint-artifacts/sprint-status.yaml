@@ -69,10 +69,10 @@ development_status:
 
   # === Epic 7.3: 每日亏损限制功能 ===
   epic-7-3: backlog
-  7-3-1-实现每日起始权益记录: backlog
-  7-3-2-实现每日亏损百分比计算: backlog
-  7-3-3-实现每日亏损阈值触发: backlog
-  7-3-4-实现每日亏损限制通知: backlog
+  7-3-1-实现每日起始权益记录: done
+  7-3-2-实现每日亏损百分比计算: done
+  7-3-3-实现每日亏损阈值触发: done
+  7-3-4-实现每日亏损限制通知: done
   epic-7-3-retrospective: optional
 
   # === Epic 7.4: Telegram 命令集成 ===

@@ -281,6 +281,32 @@ def log_ai_decision(coin: str, signal: str, reasoning: str, confidence: float) -
         ])
 
 
+def log_risk_control_event(action: str, reason: str) -> None:
+    """Log a risk control event to ai_decisions.csv.
+
+    This function records risk control events (e.g., daily loss limit triggered,
+    Kill-Switch activated) to the same CSV file as AI decisions for unified
+    audit trail.
+
+    Args:
+        action: The action type (e.g., "DAILY_LOSS_LIMIT_TRIGGERED", "RISK_CONTROL").
+        reason: Detailed reason string for the event.
+
+    References:
+        - PRD FR20: Record risk control events for audit
+        - Story 7.3.3 AC3: Record daily loss limit trigger events
+    """
+    with open(DECISIONS_CSV, 'a', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow([
+            get_current_time().isoformat(),
+            "SYSTEM",  # coin field: use SYSTEM for risk control events
+            action,    # signal field: use action type
+            reason,    # reasoning field: detailed reason
+            1.0,       # confidence field: 1.0 for system events
+        ])
+
+
 def record_iteration_message(text: str) -> None:
     """Record console output for this iteration to share via Telegram."""
     messages = get_iteration_messages()

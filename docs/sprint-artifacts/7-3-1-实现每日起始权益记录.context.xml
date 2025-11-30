@@ -1,0 +1,193 @@
+<story-context id=".bmad/bmm/workflows/4-implementation/story-context/template" v="1.0">
+  <metadata>
+    <epicId>7.3</epicId>
+    <storyId>1</storyId>
+    <title>实现每日起始权益记录</title>
+    <status>drafted</status>
+    <generatedAt>2025-11-30T21:57:00+08:00</generatedAt>
+    <generator>BMAD Story Context Workflow (manual agent execution)</generator>
+    <sourceStoryPath>docs/sprint-artifacts/7-3-1-实现每日起始权益记录.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA><![CDATA[As a system]]></asA>
+    <iWant><![CDATA[I want to record daily starting equity]]></iWant>
+    <soThat><![CDATA[so that daily loss can be calculated accurately and can drive daily loss limit checks.]]></soThat>
+    <tasks><![CDATA[
+- [ ] **Task 1 – 实现每日基准更新 helper（AC1, AC4）**  
+  - [ ] 1.1 在 `core/risk_control.py` 中实现 `update_daily_baseline(state: RiskControlState, current_equity: float) -> None`：  
+        - 读取当前 UTC 日期字符串；  
+        - 当日期变更时重置 `daily_start_equity` / `daily_start_date` / `daily_loss_pct` / `daily_loss_triggered`；  
+        - 当日期未变更时保持字段不变。  
+  - [ ] 1.2 在 helper 中添加 INFO 日志用于跨日重置场景（参考 Tech Spec 示例），并在 Dev Notes 中记录最终选定的日志级别策略。  
+
+- [ ] **Task 2 – 将 helper 集成到主循环与状态持久化路径（AC2, AC3）**  
+  - [ ] 2.1 在 `_run_iteration()` 或等价入口中，在调用 `check_risk_limits(...)` / 每日亏损检查之前调用 `update_daily_baseline(...)`；  
+  - [ ] 2.2 确认 `core/state.save_state()` 在每轮迭代结束时会连同更新后的 `RiskControlState` 一并写入 `portfolio_state.json`；  
+  - [ ] 2.3 验证在 `RISK_CONTROL_ENABLED=False` 时的行为（跳过或 no-op）与设计一致，并在 Dev Notes 中说明。  
+
+- [ ] **Task 3 – 单元与集成测试（AC5）**  
+  - [ ] 3.1 在 `tests/test_risk_control.py` 或等价文件中新增 `TestUpdateDailyBaseline` 测试类：  
+        - 覆盖首次初始化、跨日重置、同日多次调用、边界值（0/None）等场景；  
+  - [ ] 3.2 在 `tests/test_risk_control_integration.py` 或等价文件中新增一组集成测试：  
+        - 模拟从前一日迭代到次日迭代的状态变化，验证基准重置与持久化行为；  
+  - [ ] 3.3 运行 `./scripts/run_tests.sh`，确保所有现有测试（尤其是 Kill-Switch 和信号过滤相关）在加入每日基准逻辑后仍全部通过。]]></tasks>
+  </story>
+
+  <acceptanceCriteria><![CDATA[
+1. AC1 – 每日基准记录逻辑（RiskControlState 对齐 Epic 7.1/7.3）：在每轮 `_run_iteration()` 开始阶段，通过集中封装的 `update_daily_baseline(state, current_equity)` 按 UTC 日期判断是否需要重置 `daily_start_equity` / `daily_start_date` / `daily_loss_pct` / `daily_loss_triggered`，同日多次调用保持幂等。
+2. AC2 – 与风控检查流程的集成（不改变 Kill-Switch 既有语义）：每日基准更新发生在 `check_risk_limits(...)` 与后续每日亏损计算之前，不修改 Kill-Switch 字段与行为；在 `RISK_CONTROL_ENABLED=False` 时的行为需明确（跳过或 no-op），并在 Dev Notes 记录。
+3. AC3 – 持久化与重启语义（与 FR1–FR4 对齐）：当基准被初始化或跨日重置时，`RiskControlState` 通过现有 `core.state.save_state()` 写入 `portfolio_state.json.risk_control`，同一自然日内重启不重置基准，跨 UTC 日重启按新权益重新建基准，并对缺失/损坏的 `risk_control` 字段保持容错。
+4. AC4 – 日志与可观测性：跨日重置时在 INFO 级别记录结构化日志（例如 `Daily baseline reset: equity=%.2f, date=%s`），同日重复迭代不在 INFO 层刷屏（可选 DEBUG 日志），日志风格需与现有风控日志一致。
+5. AC5 – 单元与集成测试覆盖：新增单测覆盖首次初始化、跨日重置、同日多次调用及边界值；新增集成测试在模拟迭代流程中验证跨日/非跨日行为及持久化；运行 `./scripts/run_tests.sh` 全量通过（含既有 Kill-Switch 与信号过滤相关测试）。
+
+（完整 AC 文本见 Story 文件，验证时须与其保持一一对应，不得增删条目。）]]></acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+      <doc>
+        <path>docs/prd-risk-control-enhancement.md</path>
+        <title>风控系统增强 - 产品需求文档</title>
+        <section>每日亏损限制功能 / 风控状态管理</section>
+        <snippet>定义了每日亏损限制的整体行为（FR12–FR18），包括基于当日起始权益与当前权益计算当日亏损百分比、在达到阈值时自动激活 Kill-Switch，并在 UTC 00:00 自动重置每日基准。本 Story 聚焦其中「记录每日起始权益」这一前置能力。</snippet>
+      </doc>
+      <doc>
+        <path>docs/epic-risk-control-enhancement.md</path>
+        <title>风控系统增强 - Epic 与 Story 分解</title>
+        <section>Epic 7.3: 每日亏损限制功能 / Story 7.3.1</section>
+        <snippet>将 Epic 7.3 拆分为 7.3.1–7.3.4 四个 Story，其中 7.3.1 要求在 `_run_iteration()` 开始时检查是否需要记录每日起始权益，并在跨日时重置 `daily_start_equity` / `daily_start_date` 和相关字段。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/tech-spec-epic-7-1.md</path>
+        <title>Epic 技术规格: 风控状态管理基础设施</title>
+        <section>Data Models and Contracts / Workflows and Sequencing</section>
+        <snippet>详细定义了 `RiskControlState` 数据结构（包含 daily_start_equity / daily_start_date / daily_loss_pct 等字段）以及将风控检查插入主循环的时序，为在迭代开始阶段更新每日基准提供架构依据。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/epic-7-1-retro-risk-control.md</path>
+        <title>Epic 7.1 回顾：风控状态管理基础设施</title>
+        <section>5. 对后续 Epic（7.2–7.4）的影响与准备</section>
+        <snippet>回顾中明确指出 Epic 7.3 将基于 `RiskControlState.daily_start_equity` / `daily_start_date` 与 `check_risk_limits(...)` 的参数（total_equity / iteration_time）在每次迭代开始时更新每日基准并计算每日亏损。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/03-data-flow.md</path>
+        <title>架构分片：数据流</title>
+        <section>3.1 实时交易路径</section>
+        <snippet>描述了从数据输入、策略分析、LLM 决策到执行与持久化的完整数据流，并将风控检查阶段插入在市场数据与策略分析之间，是确定每日基准更新放置在 `_run_iteration()` 早期位置的重要参考。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/07-implementation-patterns.md</path>
+        <title>架构分片：实现模式与一致性规则</title>
+        <section>7.3 数据与格式模式 / 7.8 测试与校验模式</section>
+        <snippet>给出统一的时间/日志/测试模式：所有时间统一使用 UTC ISO 8601，日志采用统一格式并区分级别，测试集中在 tests/ 目录并使用 pytest。本 Story 的日志格式与测试策略需遵循这些约定。</snippet>
+      </doc>
+    </docs>
+
+    <code>
+      <codeArtifact>
+        <path>core/risk_control.py</path>
+        <kind>risk-control</kind>
+        <symbol>RiskControlState / check_risk_limits</symbol>
+        <lines>17-125</lines>
+        <reason>定义 RiskControlState 数据结构（含 daily_start_equity / daily_start_date / daily_loss_pct 字段），并提供主循环在每轮开始调用的 `check_risk_limits(...)` 风控入口，是每日基准更新与后续每日亏损检查依赖的核心模块。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>core/state.py</path>
+        <kind>state</kind>
+        <symbol>load_state / save_state / risk_control_state</symbol>
+        <lines>68-167</lines>
+        <reason>负责从 `portfolio_state.json` 加载和保存 `risk_control` 字段，并维护全局 `risk_control_state` 单例，是每日基准更新后需要正确持久化与恢复的关键位置。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>bot.py</path>
+        <kind>main-loop</kind>
+        <symbol>_run_iteration</symbol>
+        <lines>623-687</lines>
+        <reason>主交易循环入口，目前在 641-648 行调用 `check_risk_limits(...)` 并在 651 行调用 `check_stop_loss_take_profit()`；Story 7.3.1 预计在此处集成 `update_daily_baseline(...)`，在风控检查和每日亏损计算前更新每日基准。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>config/settings.py</path>
+        <kind>config</kind>
+        <symbol>RISK_CONTROL_ENABLED / DAILY_LOSS_LIMIT_ENABLED / DAILY_LOSS_LIMIT_PCT</symbol>
+        <lines>90-120</lines>
+        <reason>集中定义风控相关环境变量与默认值（包括每日亏损限制开关与阈值），决定何时启用每日基准与每日亏损检查逻辑。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>tests/test_risk_control.py</path>
+        <kind>tests</kind>
+        <symbol>RiskControlState tests / (to add) TestUpdateDailyBaseline</symbol>
+        <lines>1-200</lines>
+        <reason>已覆盖 RiskControlState 序列化/反序列化与配置解析，Story 7.3.1 需要在此基础上新增 `TestUpdateDailyBaseline` 单测，验证首次初始化、跨日重置与同日幂等行为。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>tests/test_risk_control_integration.py</path>
+        <kind>tests</kind>
+        <symbol>RiskControlIntegration / (to add) DailyBaselineIntegrationTests</symbol>
+        <lines>175-320</lines>
+        <reason>当前已包含风控状态持久化、环境变量优先级与 Kill-Switch 行为的集成测试，Story 7.3.1 需要在此文件新增跨日 / 非跨日场景下的每日基准集成测试。</reason>
+      </codeArtifact>
+    </code>
+
+    <dependencies>
+      <dependency ecosystem="python" name="pandas" version="2.2.3" />
+      <dependency ecosystem="python" name="numpy" version="2.1.3" />
+      <dependency ecosystem="python" name="requests" version="2.31.0" />
+      <dependency ecosystem="python" name="python-binance" version="1.0.19" />
+      <dependency ecosystem="python" name="hyperliquid-python-sdk" version=">=0.9.0" />
+      <dependency ecosystem="python" name="colorama" version="0.4.6" />
+      <dependency ecosystem="python" name="streamlit" version="1.38.0" />
+    </dependencies>
+  </artifacts>
+
+  <constraints><![CDATA[
+- 每日基准必须以 `RiskControlState` 为单一真实来源，禁止在其他模块维护重复的 `daily_start_equity` / `daily_start_date` 副本；所有持久化与恢复都通过 `core.state` / `core.persistence` 统一处理。
+- `update_daily_baseline(...)` 只能在主循环早期被调用（在 `check_risk_limits(...)` 与每日亏损计算之前），不得引入额外的磁盘 I/O 或网络请求，保持 O(1) 内存操作。
+- 不得在本 Story 中改变 Kill-Switch 语义：Kill-Switch 仍仅通过 `check_risk_limits(...)` / `allow_entry` 影响 entry 行为，不会阻止 close 或 SL/TP，也不会与每日基准更新耦合。
+- 实现与日志需遵循 `docs/architecture/07-implementation-patterns.md` 中的时间、日志和测试规范：时间统一使用 UTC ISO 8601，日志使用统一格式和合适级别，测试集中在 tests/ 目录并使用 pytest。
+- 每日基准逻辑应在 paper / 实盘两种模式下行为一致（均基于组合总权益），不得依赖特定交易所实现细节；如需使用市场价格，应通过现有组合权益计算函数而非直接访问外部 API。
+  ]]></constraints>
+
+  <interfaces>
+    <interface>
+      <name>RiskControlState</name>
+      <kind>dataclass</kind>
+      <signature>class RiskControlState: kill_switch_active: bool; kill_switch_reason: Optional[str]; kill_switch_triggered_at: Optional[str]; daily_start_equity: Optional[float]; daily_start_date: Optional[str]; daily_loss_pct: float; daily_loss_triggered: bool</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+    <interface>
+      <name>check_risk_limits</name>
+      <kind>function</kind>
+      <signature>check_risk_limits(risk_control_state: RiskControlState, total_equity: Optional[float] = None, iteration_time: Optional[datetime] = None, risk_control_enabled: bool = True) -&gt; bool</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+    <interface>
+      <name>update_daily_baseline</name>
+      <kind>function (planned)</kind>
+      <signature>update_daily_baseline(state: RiskControlState, current_equity: float) -&gt; None</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+    <interface>
+      <name>_run_iteration</name>
+      <kind>function</kind>
+      <signature>_run_iteration() -&gt; None</signature>
+      <path>bot.py</path>
+    </interface>
+  </interfaces>
+
+  <tests>
+    <standards><![CDATA[
+- 使用 pytest 作为测试框架，所有测试位于 tests/ 目录下，文件命名为 test_*.py。
+- 风控与每日亏损相关测试需覆盖：首次启动、跨日重启、同日多次迭代以及配置开关（RISK_CONTROL_ENABLED / DAILY_LOSS_LIMIT_ENABLED）的组合场景。
+- 对关键行为（每日基准初始化与跨日重置）应通过断言 RiskControlState 字段与日志输出，确认行为符合 Story AC 与 Tech Spec 约定，并保持既有 Kill-Switch / 信号过滤相关测试全部通过。]]></standards>
+    <locations><![CDATA[
+- tests/test_risk_control.py
+- tests/test_risk_control_integration.py
+    ]]></locations>
+    <ideas><![CDATA[
+- AC1：在 `tests/test_risk_control.py` 中构造不同的 `RiskControlState` 初始状态（daily_start_date 为 None/过去日期/今日），调用 `update_daily_baseline(state, current_equity)`，断言 daily_start_equity / daily_start_date / daily_loss_pct / daily_loss_triggered 的更新符合预期，并验证同日多次调用不改变基准。
+- AC2：在集成测试中，通过 mock `calculate_total_equity()` 与时间提供者，模拟多轮 `_run_iteration()` 调用，确保每日基准更新发生在 `check_risk_limits(...)` 与每日亏损计算之前，不改变 Kill-Switch 现有行为。
+- AC3：在集成测试中模拟跨日重启：先运行若干迭代并保存状态，再修改时间为次日、重新加载状态并运行一轮迭代，验证新的 daily_start_equity / daily_start_date 正确建立，旧状态不会导致错误。
+- AC4：使用 caplog 捕获日志，在发生跨日重置时断言存在一条 INFO 日志 `Daily baseline reset: equity=..., date=...`，并在同日重复迭代场景中验证 INFO 日志不重复出现（如有 DEBUG 日志则单独断言）。
+- AC5：在加入上述测试后运行 `./scripts/run_tests.sh` 全量测试，确保所有既有风控与 Kill-Switch / 信号过滤相关测试依旧通过，仅在期望值层面反映新增日志或状态字段的影响。]]></ideas>
+  </tests>
+</story-context>

@@ -12,6 +12,9 @@ from core.risk_control import (
     activate_kill_switch,
     deactivate_kill_switch,
     apply_kill_switch_env_override,
+    update_daily_baseline,
+    calculate_daily_loss_pct,
+    check_daily_loss_limit,
 )
 
 
@@ -556,3 +559,780 @@ class TestCheckRiskLimitsKillSwitch:
 
         assert "Kill-Switch is active" in caplog.text
         assert "test:log" in caplog.text
+
+
+class TestUpdateDailyBaseline:
+    """Tests for update_daily_baseline helper (Story 7.3.1)."""
+
+    def test_initializes_baseline_when_date_is_none(self, caplog):
+        """Should initialize baseline when daily_start_date is None."""
+        state = RiskControlState(
+            daily_start_equity=None,
+            daily_start_date=None,
+            daily_loss_pct=-3.5,
+            daily_loss_triggered=True,
+        )
+        current_equity = 10000.0
+
+        with caplog.at_level(logging.INFO):
+            update_daily_baseline(state, current_equity)
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        assert state.daily_start_date == today
+        assert state.daily_start_equity == current_equity
+        assert state.daily_loss_pct == 0.0
+        assert state.daily_loss_triggered is False
+        assert "Daily baseline reset" in caplog.text
+        assert f"equity={current_equity:.2f}" in caplog.text
+        assert f"date={today}" in caplog.text
+
+    def test_resets_baseline_when_date_changes(self, caplog):
+        """Should reset baseline when stored date is different from today."""
+        previous_date = "2000-01-01"
+        state = RiskControlState(
+            daily_start_equity=5000.0,
+            daily_start_date=previous_date,
+            daily_loss_pct=-5.0,
+            daily_loss_triggered=True,
+        )
+        current_equity = 9500.0
+
+        with caplog.at_level(logging.INFO):
+            update_daily_baseline(state, current_equity)
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        assert state.daily_start_date == today
+        assert state.daily_start_equity == current_equity
+        assert state.daily_loss_pct == 0.0
+        assert state.daily_loss_triggered is False
+        assert "Daily baseline reset" in caplog.text
+        assert f"previous_date={previous_date}" in caplog.text
+
+    def test_same_day_call_is_idempotent(self, caplog):
+        """Calling helper multiple times on same day should not change baseline."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        state = RiskControlState(
+            daily_start_equity=12345.0,
+            daily_start_date=today,
+            daily_loss_pct=-1.0,
+            daily_loss_triggered=True,
+        )
+        current_equity = 9999.0
+
+        with caplog.at_level(logging.DEBUG):
+            update_daily_baseline(state, current_equity)
+
+        assert state.daily_start_date == today
+        assert state.daily_start_equity == 12345.0
+        assert state.daily_loss_pct == -1.0
+        assert state.daily_loss_triggered is True
+        assert "Daily baseline unchanged" in caplog.text
+        assert "Daily baseline reset" not in caplog.text
+
+    @pytest.mark.parametrize("initial_equity", [0.0, None])
+    def test_handles_zero_or_none_equity_without_error(self, initial_equity):
+        """Should handle 0 or None previous equity without raising errors."""
+        state = RiskControlState(
+            daily_start_equity=initial_equity,
+            daily_start_date=None,
+        )
+
+        update_daily_baseline(state, current_equity=0.0)
+
+        assert state.daily_start_equity == 0.0
+
+
+class TestCalculateDailyLossPct:
+    """Tests for calculate_daily_loss_pct helper (Story 7.3.2)."""
+
+    def test_zero_change_returns_zero(self):
+        """Should return 0.0 when current_equity equals daily_start_equity (AC1)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        result = calculate_daily_loss_pct(state, current_equity=10000.0)
+
+        assert result == 0.0
+        assert state.daily_loss_pct == 0.0
+
+    def test_profit_returns_positive_percentage(self):
+        """Should return positive percentage when current_equity > daily_start_equity (AC1)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        result = calculate_daily_loss_pct(state, current_equity=10500.0)
+
+        assert result == 5.0
+        assert state.daily_loss_pct == 5.0
+
+    def test_loss_returns_negative_percentage(self):
+        """Should return negative percentage when current_equity < daily_start_equity (AC1)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        result = calculate_daily_loss_pct(state, current_equity=9500.0)
+
+        assert result == -5.0
+        assert state.daily_loss_pct == -5.0
+
+    def test_formula_precision(self):
+        """Should calculate with correct precision following the formula (AC1)."""
+        state = RiskControlState(
+            daily_start_equity=12500.0,
+            daily_start_date="2025-11-30",
+        )
+
+        # (11875 - 12500) / 12500 * 100 = -5.0
+        result = calculate_daily_loss_pct(state, current_equity=11875.0)
+
+        assert result == -5.0
+        assert state.daily_loss_pct == -5.0
+
+        # (13125 - 12500) / 12500 * 100 = 5.0
+        result = calculate_daily_loss_pct(state, current_equity=13125.0)
+
+        assert result == 5.0
+        assert state.daily_loss_pct == 5.0
+
+    def test_none_baseline_returns_zero(self):
+        """Should return 0.0 when daily_start_equity is None (AC2)."""
+        state = RiskControlState(
+            daily_start_equity=None,
+            daily_start_date=None,
+            daily_loss_pct=-3.5,  # Previous value should be reset
+        )
+
+        result = calculate_daily_loss_pct(state, current_equity=10000.0)
+
+        assert result == 0.0
+        assert state.daily_loss_pct == 0.0
+
+    def test_zero_baseline_returns_zero(self):
+        """Should return 0.0 when daily_start_equity is 0 (AC2)."""
+        state = RiskControlState(
+            daily_start_equity=0.0,
+            daily_start_date="2025-11-30",
+            daily_loss_pct=-5.0,  # Previous value should be reset
+        )
+
+        result = calculate_daily_loss_pct(state, current_equity=10000.0)
+
+        assert result == 0.0
+        assert state.daily_loss_pct == 0.0
+
+    def test_negative_baseline_returns_zero(self):
+        """Should return 0.0 when daily_start_equity is negative (AC2)."""
+        state = RiskControlState(
+            daily_start_equity=-100.0,
+            daily_start_date="2025-11-30",
+            daily_loss_pct=-2.0,  # Previous value should be reset
+        )
+
+        result = calculate_daily_loss_pct(state, current_equity=10000.0)
+
+        assert result == 0.0
+        assert state.daily_loss_pct == 0.0
+
+    def test_boundary_cases_do_not_raise_exception(self):
+        """Should not raise any exception for boundary cases (AC2)."""
+        boundary_cases = [None, 0.0, -100.0, -0.001]
+
+        for baseline in boundary_cases:
+            state = RiskControlState(
+                daily_start_equity=baseline,
+                daily_start_date="2025-11-30",
+            )
+
+            # Should not raise
+            result = calculate_daily_loss_pct(state, current_equity=10000.0)
+
+            assert result == 0.0
+            assert state.daily_loss_pct == 0.0
+
+    def test_multiple_calls_update_state_correctly(self):
+        """Should update state.daily_loss_pct on each call (AC4)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        # First call: profit
+        result1 = calculate_daily_loss_pct(state, current_equity=10500.0)
+        assert result1 == 5.0
+        assert state.daily_loss_pct == 5.0
+
+        # Second call: loss
+        result2 = calculate_daily_loss_pct(state, current_equity=9800.0)
+        assert result2 == -2.0
+        assert state.daily_loss_pct == -2.0
+
+        # Third call: back to break-even
+        result3 = calculate_daily_loss_pct(state, current_equity=10000.0)
+        assert result3 == 0.0
+        assert state.daily_loss_pct == 0.0
+
+    def test_return_value_matches_state_field(self):
+        """Should return the same value as state.daily_loss_pct (AC1, AC2)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        result = calculate_daily_loss_pct(state, current_equity=9250.0)
+
+        assert result == state.daily_loss_pct
+        assert result == -7.5
+
+    def test_does_not_modify_kill_switch_fields(self):
+        """Should not modify Kill-Switch related fields (AC2)."""
+        state = RiskControlState(
+            kill_switch_active=False,
+            kill_switch_reason=None,
+            kill_switch_triggered_at=None,
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+            daily_loss_triggered=False,
+        )
+
+        calculate_daily_loss_pct(state, current_equity=8000.0)
+
+        # Kill-Switch fields should remain unchanged
+        assert state.kill_switch_active is False
+        assert state.kill_switch_reason is None
+        assert state.kill_switch_triggered_at is None
+        # daily_loss_triggered should also remain unchanged (Story 7.3.3 responsibility)
+        assert state.daily_loss_triggered is False
+
+    def test_logs_debug_on_normal_calculation(self, caplog):
+        """Should log DEBUG level for normal calculation."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        with caplog.at_level(logging.DEBUG):
+            calculate_daily_loss_pct(state, current_equity=9500.0)
+
+        assert "calculate_daily_loss_pct" in caplog.text
+        assert "current_equity=9500.00" in caplog.text
+        assert "daily_start_equity=10000.00" in caplog.text
+
+    def test_logs_debug_on_invalid_baseline(self, caplog):
+        """Should log DEBUG level for invalid baseline case."""
+        state = RiskControlState(
+            daily_start_equity=None,
+            daily_start_date=None,
+        )
+
+        with caplog.at_level(logging.DEBUG):
+            calculate_daily_loss_pct(state, current_equity=10000.0)
+
+        assert "invalid baseline" in caplog.text
+        assert "returning 0.0" in caplog.text
+
+    def test_preserves_other_state_fields(self):
+        """Should not modify fields other than daily_loss_pct."""
+        state = RiskControlState(
+            kill_switch_active=True,
+            kill_switch_reason="test:reason",
+            kill_switch_triggered_at="2025-11-30T10:00:00+00:00",
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+            daily_loss_pct=0.0,
+            daily_loss_triggered=True,
+        )
+
+        calculate_daily_loss_pct(state, current_equity=9000.0)
+
+        # Only daily_loss_pct should change
+        assert state.kill_switch_active is True
+        assert state.kill_switch_reason == "test:reason"
+        assert state.kill_switch_triggered_at == "2025-11-30T10:00:00+00:00"
+        assert state.daily_start_equity == 10000.0
+        assert state.daily_start_date == "2025-11-30"
+        assert state.daily_loss_pct == -10.0  # This should change
+        assert state.daily_loss_triggered is True  # This should NOT change
+
+
+class TestCheckDailyLossLimit:
+    """Tests for check_daily_loss_limit() function (Story 7.3.3).
+
+    This test class covers:
+    - AC1: Core trigger logic with threshold comparison
+    - AC2: Integration with Kill-Switch activation
+    - AC3: Logging and notification callbacks
+    - AC4: Boundary cases and edge conditions
+    """
+
+    def test_returns_false_when_risk_control_disabled(self):
+        """Should return False when RISK_CONTROL_ENABLED=False (AC4)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        result = check_daily_loss_limit(
+            state,
+            current_equity=9000.0,  # -10% loss, would trigger if enabled
+            risk_control_enabled=False,
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+        )
+
+        assert result is False
+        assert state.daily_loss_triggered is False
+        assert state.kill_switch_active is False
+
+    def test_returns_false_when_daily_loss_limit_disabled(self):
+        """Should return False when DAILY_LOSS_LIMIT_ENABLED=False (AC4)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        result = check_daily_loss_limit(
+            state,
+            current_equity=9000.0,  # -10% loss, would trigger if enabled
+            risk_control_enabled=True,
+            daily_loss_limit_enabled=False,
+            daily_loss_limit_pct=5.0,
+        )
+
+        assert result is False
+        assert state.daily_loss_triggered is False
+        assert state.kill_switch_active is False
+
+    def test_returns_false_when_daily_start_equity_is_none(self):
+        """Should return False when daily_start_equity is None (AC4)."""
+        state = RiskControlState(
+            daily_start_equity=None,
+            daily_start_date=None,
+        )
+
+        result = check_daily_loss_limit(
+            state,
+            current_equity=9000.0,
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+        )
+
+        assert result is False
+        assert state.daily_loss_triggered is False
+        assert state.kill_switch_active is False
+
+    def test_returns_false_when_daily_start_equity_is_zero(self):
+        """Should return False when daily_start_equity is 0 (AC4)."""
+        state = RiskControlState(
+            daily_start_equity=0.0,
+            daily_start_date="2025-11-30",
+        )
+
+        result = check_daily_loss_limit(
+            state,
+            current_equity=9000.0,
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+        )
+
+        assert result is False
+        assert state.daily_loss_triggered is False
+        assert state.kill_switch_active is False
+
+    def test_returns_false_when_daily_start_equity_is_negative(self):
+        """Should return False when daily_start_equity is negative (AC4)."""
+        state = RiskControlState(
+            daily_start_equity=-1000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        result = check_daily_loss_limit(
+            state,
+            current_equity=9000.0,
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+        )
+
+        assert result is False
+        assert state.daily_loss_triggered is False
+        assert state.kill_switch_active is False
+
+    def test_returns_false_when_threshold_not_reached(self):
+        """Should return False when loss is below threshold (AC1)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        # -3% loss, threshold is -5%
+        result = check_daily_loss_limit(
+            state,
+            current_equity=9700.0,
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+        )
+
+        assert result is False
+        assert state.daily_loss_triggered is False
+        assert state.kill_switch_active is False
+        assert state.daily_loss_pct == -3.0
+
+    def test_returns_false_when_profit(self):
+        """Should return False when there is profit (AC1)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        # +5% profit
+        result = check_daily_loss_limit(
+            state,
+            current_equity=10500.0,
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+        )
+
+        assert result is False
+        assert state.daily_loss_triggered is False
+        assert state.kill_switch_active is False
+        assert state.daily_loss_pct == 5.0
+
+    def test_triggers_when_threshold_exactly_reached(self):
+        """Should trigger when loss exactly equals threshold (AC1)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        # -5% loss, threshold is -5%
+        result = check_daily_loss_limit(
+            state,
+            current_equity=9500.0,
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+        )
+
+        assert result is True
+        assert state.daily_loss_triggered is True
+        assert state.kill_switch_active is True
+        assert state.daily_loss_pct == -5.0
+        assert "Daily loss limit reached" in state.kill_switch_reason
+
+    def test_triggers_when_threshold_exceeded(self):
+        """Should trigger when loss exceeds threshold (AC1)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        # -6.2% loss, threshold is -5%
+        result = check_daily_loss_limit(
+            state,
+            current_equity=9380.0,
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+        )
+
+        assert result is True
+        assert state.daily_loss_triggered is True
+        assert state.kill_switch_active is True
+        assert state.daily_loss_pct == -6.2
+        assert "-6.20%" in state.kill_switch_reason
+        assert "-5.00%" in state.kill_switch_reason
+
+    def test_returns_false_when_already_triggered(self):
+        """Should return False when daily_loss_triggered is already True (AC1)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+            daily_loss_triggered=True,  # Already triggered
+            kill_switch_active=True,
+            kill_switch_reason="Previous trigger",
+        )
+
+        # -10% loss, would trigger if not already triggered
+        result = check_daily_loss_limit(
+            state,
+            current_equity=9000.0,
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+        )
+
+        assert result is False
+        # State should remain unchanged
+        assert state.daily_loss_triggered is True
+        assert state.kill_switch_reason == "Previous trigger"
+
+    def test_updates_daily_loss_pct_even_when_not_triggered(self):
+        """Should update daily_loss_pct even when threshold not reached (AC1)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+            daily_loss_pct=0.0,
+        )
+
+        check_daily_loss_limit(
+            state,
+            current_equity=9800.0,  # -2% loss
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+        )
+
+        assert state.daily_loss_pct == -2.0
+
+    def test_calls_notify_fn_on_trigger(self):
+        """Should call notify_fn when threshold is triggered (AC3)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        notify_calls = []
+
+        def mock_notify(loss_pct, limit_pct, daily_start_equity, current_equity):
+            notify_calls.append({
+                "loss_pct": loss_pct,
+                "limit_pct": limit_pct,
+                "daily_start_equity": daily_start_equity,
+                "current_equity": current_equity,
+            })
+
+        result = check_daily_loss_limit(
+            state,
+            current_equity=9400.0,  # -6% loss
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+            notify_fn=mock_notify,
+        )
+
+        assert result is True
+        assert len(notify_calls) == 1
+        assert notify_calls[0]["loss_pct"] == -6.0
+        assert notify_calls[0]["limit_pct"] == 5.0
+        assert notify_calls[0]["daily_start_equity"] == 10000.0
+        assert notify_calls[0]["current_equity"] == 9400.0
+
+    def test_does_not_call_notify_fn_when_not_triggered(self):
+        """Should not call notify_fn when threshold not reached (AC3)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        notify_calls = []
+
+        def mock_notify(loss_pct, limit_pct, daily_start_equity, current_equity):
+            notify_calls.append(True)
+
+        check_daily_loss_limit(
+            state,
+            current_equity=9800.0,  # -2% loss, below threshold
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+            notify_fn=mock_notify,
+        )
+
+        assert len(notify_calls) == 0
+
+    def test_calls_record_event_fn_on_trigger(self):
+        """Should call record_event_fn when threshold is triggered (AC3)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        record_calls = []
+
+        def mock_record(action, reason):
+            record_calls.append({"action": action, "reason": reason})
+
+        result = check_daily_loss_limit(
+            state,
+            current_equity=9400.0,  # -6% loss
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+            record_event_fn=mock_record,
+        )
+
+        assert result is True
+        assert len(record_calls) == 1
+        assert record_calls[0]["action"] == "DAILY_LOSS_LIMIT_TRIGGERED"
+        assert "Daily loss limit reached" in record_calls[0]["reason"]
+
+    def test_does_not_call_record_event_fn_when_not_triggered(self):
+        """Should not call record_event_fn when threshold not reached (AC3)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        record_calls = []
+
+        def mock_record(action, reason):
+            record_calls.append(True)
+
+        check_daily_loss_limit(
+            state,
+            current_equity=9800.0,  # -2% loss, below threshold
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+            record_event_fn=mock_record,
+        )
+
+        assert len(record_calls) == 0
+
+    def test_logs_warning_on_trigger(self, caplog):
+        """Should log WARNING level when threshold is triggered (AC3)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        with caplog.at_level(logging.WARNING):
+            check_daily_loss_limit(
+                state,
+                current_equity=9400.0,  # -6% loss
+                daily_loss_limit_enabled=True,
+                daily_loss_limit_pct=5.0,
+            )
+
+        assert "Daily loss limit triggered" in caplog.text
+        assert "loss_pct=-6.00%" in caplog.text
+        assert "threshold=-5.00%" in caplog.text
+        assert "first_trigger=True" in caplog.text
+
+    def test_logs_debug_when_not_triggered(self, caplog):
+        """Should log DEBUG level when threshold not reached."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        with caplog.at_level(logging.DEBUG):
+            check_daily_loss_limit(
+                state,
+                current_equity=9800.0,  # -2% loss
+                daily_loss_limit_enabled=True,
+                daily_loss_limit_pct=5.0,
+            )
+
+        assert "threshold not reached" in caplog.text
+
+    def test_handles_notify_fn_exception(self, caplog):
+        """Should handle notify_fn exception gracefully (AC3)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        def failing_notify(*args):
+            raise RuntimeError("Notification failed")
+
+        with caplog.at_level(logging.ERROR):
+            result = check_daily_loss_limit(
+                state,
+                current_equity=9400.0,  # -6% loss
+                daily_loss_limit_enabled=True,
+                daily_loss_limit_pct=5.0,
+                notify_fn=failing_notify,
+            )
+
+        # Should still return True (trigger succeeded)
+        assert result is True
+        assert state.daily_loss_triggered is True
+        assert "Failed to send daily loss limit notification" in caplog.text
+
+    def test_handles_record_event_fn_exception(self, caplog):
+        """Should handle record_event_fn exception gracefully (AC3)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        def failing_record(*args):
+            raise RuntimeError("Record failed")
+
+        with caplog.at_level(logging.ERROR):
+            result = check_daily_loss_limit(
+                state,
+                current_equity=9400.0,  # -6% loss
+                daily_loss_limit_enabled=True,
+                daily_loss_limit_pct=5.0,
+                record_event_fn=failing_record,
+            )
+
+        # Should still return True (trigger succeeded)
+        assert result is True
+        assert state.daily_loss_triggered is True
+        assert "Failed to record daily loss limit event" in caplog.text
+
+    def test_multiple_calls_do_not_duplicate_trigger(self):
+        """Should not trigger multiple times in same day (AC1)."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        notify_calls = []
+
+        def mock_notify(*args):
+            notify_calls.append(True)
+
+        # First call: triggers
+        result1 = check_daily_loss_limit(
+            state,
+            current_equity=9400.0,  # -6% loss
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+            notify_fn=mock_notify,
+        )
+
+        # Second call: should not trigger again
+        result2 = check_daily_loss_limit(
+            state,
+            current_equity=9200.0,  # -8% loss, even worse
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+            notify_fn=mock_notify,
+        )
+
+        assert result1 is True
+        assert result2 is False
+        assert len(notify_calls) == 1  # Only one notification
+
+    def test_different_threshold_values(self):
+        """Should work with different threshold values (AC1)."""
+        # Test with 10% threshold
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+        )
+
+        # -8% loss, threshold is 10%
+        result = check_daily_loss_limit(
+            state,
+            current_equity=9200.0,
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=10.0,
+        )
+
+        assert result is False  # Not triggered yet
+        assert state.daily_loss_triggered is False
+
+        # -10% loss, threshold is 10%
+        result = check_daily_loss_limit(
+            state,
+            current_equity=9000.0,
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=10.0,
+        )
+
+        assert result is True  # Now triggered
+        assert state.daily_loss_triggered is True

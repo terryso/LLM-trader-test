@@ -72,11 +72,270 @@ class RiskControlState:
         )
 
 
+def update_daily_baseline(
+    state: RiskControlState,
+    current_equity: float,
+) -> None:
+    """Update the daily baseline equity for risk control checks.
+
+    This helper is called at the start of each iteration and is idempotent
+    for a given UTC date. When the UTC date changes (including first
+    initialization), it resets the daily baseline fields on the provided
+    RiskControlState instance.
+
+    Args:
+        state: The mutable RiskControlState instance to update.
+        current_equity: Current total equity used as the new daily baseline
+            when the date changes.
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    previous_date = state.daily_start_date
+    previous_equity = state.daily_start_equity
+
+    if previous_date == today:
+        # Same UTC day: keep existing baseline to avoid resetting intra-day.
+        logging.debug(
+            "Daily baseline unchanged: date=%s, equity=%s",
+            today,
+            "None" if previous_equity is None else f"{previous_equity:.2f}",
+        )
+        return
+
+    # New UTC day (or first initialization): reset baseline fields.
+    state.daily_start_date = today
+    state.daily_start_equity = current_equity
+    state.daily_loss_pct = 0.0
+    state.daily_loss_triggered = False
+
+    logging.info(
+        "Daily baseline reset: equity=%.2f, date=%s, previous_date=%s, previous_equity=%s",
+        current_equity,
+        today,
+        previous_date or "",
+        "None" if previous_equity is None else f"{previous_equity:.2f}",
+    )
+
+
+def calculate_daily_loss_pct(
+    state: RiskControlState,
+    current_equity: float,
+) -> float:
+    """Calculate the daily loss percentage based on current equity.
+
+    This helper computes the percentage change from the daily baseline equity
+    to the current equity. The result is written to state.daily_loss_pct and
+    also returned for caller convenience.
+
+    Formula: (current_equity - daily_start_equity) / daily_start_equity * 100
+
+    The return value sign convention:
+    - Positive value: profit (current_equity > daily_start_equity)
+    - Negative value: loss (current_equity < daily_start_equity)
+    - Zero: no change or invalid baseline
+
+    This function is designed to be called after update_daily_baseline() has
+    established the daily baseline. It does NOT trigger Kill-Switch or read
+    threshold configuration; those responsibilities belong to Story 7.3.3.
+
+    Args:
+        state: The mutable RiskControlState instance to update.
+        current_equity: Current total equity to compare against daily baseline.
+
+    Returns:
+        The calculated daily loss percentage. Returns 0.0 if daily_start_equity
+        is None, zero, or negative (boundary cases).
+
+    References:
+        - Epic 7.3 / FR13: Calculate daily equity change percentage each iteration
+        - Story 7.3.2: Implement daily loss percentage calculation helper
+    """
+    daily_start_equity = state.daily_start_equity
+
+    # Boundary case handling (AC2): avoid division by zero or invalid baseline
+    if daily_start_equity is None or daily_start_equity <= 0:
+        # Safe default: set daily_loss_pct to 0.0 to avoid undefined state
+        state.daily_loss_pct = 0.0
+        logging.debug(
+            "calculate_daily_loss_pct: invalid baseline (daily_start_equity=%s), "
+            "returning 0.0",
+            daily_start_equity,
+        )
+        return 0.0
+
+    # Normal case: compute percentage change
+    loss_pct = (current_equity - daily_start_equity) / daily_start_equity * 100
+
+    # Update state field (AC1, AC2)
+    state.daily_loss_pct = loss_pct
+
+    logging.debug(
+        "calculate_daily_loss_pct: current_equity=%.2f, daily_start_equity=%.2f, "
+        "loss_pct=%.4f%%",
+        current_equity,
+        daily_start_equity,
+        loss_pct,
+    )
+
+    return loss_pct
+
+
+def check_daily_loss_limit(
+    state: RiskControlState,
+    current_equity: float,
+    *,
+    daily_loss_limit_enabled: bool = True,
+    daily_loss_limit_pct: float = 5.0,
+    risk_control_enabled: bool = True,
+    positions_count: int = 0,
+    notify_fn: Optional[Callable[[float, float, float, float], None]] = None,
+    record_event_fn: Optional[Callable[[str, str], None]] = None,
+) -> bool:
+    """Check if daily loss limit has been reached and trigger Kill-Switch if so.
+
+    This function is the core implementation for Epic 7.3.3. It:
+    1. Calculates the current daily loss percentage using calculate_daily_loss_pct()
+    2. Compares against the configured threshold (DAILY_LOSS_LIMIT_PCT)
+    3. Triggers Kill-Switch via activate_kill_switch() when threshold is reached
+    4. Records the event and sends notifications
+
+    The trigger condition is: loss_pct <= -daily_loss_limit_pct
+    (e.g., -6.2% <= -5.0% means the threshold is reached)
+
+    Args:
+        state: The mutable RiskControlState instance to check and update.
+        current_equity: Current total equity for loss calculation.
+        daily_loss_limit_enabled: Whether daily loss limit feature is enabled.
+        daily_loss_limit_pct: The threshold percentage (positive value, e.g., 5.0 for 5%).
+        risk_control_enabled: Whether risk control is globally enabled.
+        positions_count: Current number of open positions (for notification).
+        notify_fn: Optional callback for sending daily loss limit notification.
+            Signature: notify_fn(loss_pct, limit_pct, daily_start_equity, current_equity).
+        record_event_fn: Optional callback for recording risk control event.
+            Signature: record_event_fn(action, reason).
+
+    Returns:
+        True if Kill-Switch was triggered by daily loss limit in this call
+        (first time trigger only), False otherwise.
+
+    Boundary cases (returns False without triggering):
+        - DAILY_LOSS_LIMIT_ENABLED=False
+        - RISK_CONTROL_ENABLED=False
+        - daily_start_equity is None, 0, or negative
+        - daily_loss_triggered is already True (prevents duplicate triggers)
+        - loss_pct > -daily_loss_limit_pct (threshold not reached)
+
+    References:
+        - PRD FR12-FR14: Daily loss limit configuration and trigger behavior
+        - Epic 7.3.3: Implement daily loss threshold trigger
+        - Story 7.3.3 AC1: Core trigger logic implementation
+    """
+    # Boundary case 1: Feature disabled
+    if not risk_control_enabled:
+        logging.debug(
+            "check_daily_loss_limit: skipped (RISK_CONTROL_ENABLED=False)"
+        )
+        return False
+
+    if not daily_loss_limit_enabled:
+        logging.debug(
+            "check_daily_loss_limit: skipped (DAILY_LOSS_LIMIT_ENABLED=False)"
+        )
+        return False
+
+    # Boundary case 2: Invalid daily_start_equity
+    daily_start_equity = state.daily_start_equity
+    if daily_start_equity is None or daily_start_equity <= 0:
+        logging.debug(
+            "check_daily_loss_limit: skipped (invalid daily_start_equity=%s)",
+            daily_start_equity,
+        )
+        return False
+
+    # Calculate current daily loss percentage (updates state.daily_loss_pct)
+    loss_pct = calculate_daily_loss_pct(state, current_equity)
+
+    # Boundary case 3: Already triggered today (prevent duplicate triggers)
+    if state.daily_loss_triggered:
+        logging.debug(
+            "check_daily_loss_limit: already triggered today, loss_pct=%.2f%%",
+            loss_pct,
+        )
+        return False
+
+    # Check if threshold is reached: loss_pct <= -daily_loss_limit_pct
+    # e.g., -6.2% <= -5.0% means threshold reached
+    threshold = -daily_loss_limit_pct
+    if loss_pct > threshold:
+        logging.debug(
+            "check_daily_loss_limit: threshold not reached, loss_pct=%.2f%% > %.2f%%",
+            loss_pct,
+            threshold,
+        )
+        return False
+
+    # === Threshold reached: First-time trigger ===
+    state.daily_loss_triggered = True
+
+    # Build reason string with details
+    reason = (
+        f"Daily loss limit reached: {loss_pct:.2f}% <= -{daily_loss_limit_pct:.2f}%"
+    )
+
+    # Log structured warning (AC3)
+    logging.warning(
+        "Daily loss limit triggered: loss_pct=%.2f%%, threshold=%.2f%%, "
+        "daily_start_equity=%.2f, current_equity=%.2f, first_trigger=True",
+        loss_pct,
+        -daily_loss_limit_pct,
+        daily_start_equity,
+        current_equity,
+    )
+
+    # Activate Kill-Switch (AC1, AC2)
+    # Note: activate_kill_switch returns a new state, but we need to update
+    # the mutable state object passed to us
+    new_state = activate_kill_switch(
+        state,
+        reason=reason,
+        positions_count=positions_count,
+    )
+    # Copy Kill-Switch fields back to the mutable state
+    state.kill_switch_active = new_state.kill_switch_active
+    state.kill_switch_reason = new_state.kill_switch_reason
+    state.kill_switch_triggered_at = new_state.kill_switch_triggered_at
+
+    # Record risk control event (AC3 - for ai_decisions.csv)
+    if record_event_fn is not None:
+        try:
+            record_event_fn("DAILY_LOSS_LIMIT_TRIGGERED", reason)
+        except Exception as e:
+            logging.error(
+                "Failed to record daily loss limit event: %s", e
+            )
+
+    # Send notification (AC3 - for Story 7.3.4 integration)
+    if notify_fn is not None:
+        try:
+            notify_fn(loss_pct, daily_loss_limit_pct, daily_start_equity, current_equity)
+        except Exception as e:
+            logging.error(
+                "Failed to send daily loss limit notification: %s", e
+            )
+
+    return True
+
+
 def check_risk_limits(
     risk_control_state: RiskControlState,
     total_equity: Optional[float] = None,
     iteration_time: Optional[datetime] = None,
     risk_control_enabled: bool = True,
+    *,
+    daily_loss_limit_enabled: bool = True,
+    daily_loss_limit_pct: float = 5.0,
+    positions_count: int = 0,
+    notify_daily_loss_fn: Optional[Callable[[float, float, float, float], None]] = None,
+    record_event_fn: Optional[Callable[[str, str], None]] = None,
 ) -> bool:
     """Check risk limits at the start of each trading iteration.
 
@@ -90,13 +349,18 @@ def check_risk_limits(
 
     Args:
         risk_control_state: The current risk control state object.
-        total_equity: Current total account equity (optional, for future use).
+        total_equity: Current total account equity for daily loss calculation.
         iteration_time: Current iteration timestamp (optional, for future use).
         risk_control_enabled: Whether risk control is enabled (from RISK_CONTROL_ENABLED).
+        daily_loss_limit_enabled: Whether daily loss limit feature is enabled.
+        daily_loss_limit_pct: The threshold percentage (positive value, e.g., 5.0 for 5%).
+        positions_count: Current number of open positions (for notification).
+        notify_daily_loss_fn: Optional callback for daily loss limit notification.
+        record_event_fn: Optional callback for recording risk control events.
 
     Returns:
         True if new entry trades should be allowed, False if they should be blocked
-        (e.g., Kill-Switch is active).
+        (e.g., Kill-Switch is active or daily loss limit triggered).
     """
     if not risk_control_enabled:
         logging.info("Risk control check skipped: RISK_CONTROL_ENABLED=False")
@@ -118,9 +382,22 @@ def check_risk_limits(
         )
         return False
 
-    # Future Epic 7.3: Check daily loss limit
-    # if daily_loss_limit_enabled and check_daily_loss_limit(...):
-    #     return False
+    # Check daily loss limit (Epic 7.3.3)
+    # Only check if we have valid equity and the feature is enabled
+    if total_equity is not None and daily_loss_limit_enabled:
+        triggered = check_daily_loss_limit(
+            state=risk_control_state,
+            current_equity=total_equity,
+            daily_loss_limit_enabled=daily_loss_limit_enabled,
+            daily_loss_limit_pct=daily_loss_limit_pct,
+            risk_control_enabled=risk_control_enabled,
+            positions_count=positions_count,
+            notify_fn=notify_daily_loss_fn,
+            record_event_fn=record_event_fn,
+        )
+        if triggered:
+            # Kill-Switch was just activated by daily loss limit
+            return False
 
     return True
 

@@ -1,0 +1,221 @@
+<story-context id=".bmad/bmm/workflows/4-implementation/story-context/template" v="1.0">
+  <metadata>
+    <epicId>7.3</epicId>
+    <storyId>4</storyId>
+    <title>实现每日亏损限制通知</title>
+    <status>drafted</status>
+    <generatedAt>2025-11-30T23:28:00+08:00</generatedAt>
+    <generator>BMAD Story Context Workflow (manual agent execution)</generator>
+    <sourceStoryPath>docs/sprint-artifacts/7-3-4-实现每日亏损限制通知.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA><![CDATA[As a user]]></asA>
+    <iWant><![CDATA[I want to receive detailed notifications when the daily loss limit is triggered]]></iWant>
+    <soThat><![CDATA[so that I understand the risk situation and can take appropriate actions in time.]]></soThat>
+    <tasks><![CDATA[
+- [ ] **Task 1 – 设计每日亏损限制通知消息结构（AC1）**  
+  - [ ] 1.1 在 `notifications/telegram.py` 中新增或完善 `build_daily_loss_limit_triggered_message(...)`：  
+        - 接受 `loss_pct`、`limit_pct`、`daily_start_equity`、`current_equity` 等参数；  
+        - 使用 MarkdownV2 友好的格式与适当的 emoji；  
+        - 确保对特殊字符进行正确转义。  
+  - [ ] 1.2 在 Dev Notes 中记录最终文案风格与数值格式（小数位数、货币符号等），与 Kill-Switch 通知保持一致。
+
+- [ ] **Task 2 – 将通知逻辑与风控入口集成（AC2）**  
+  - [ ] 2.1 在 `notifications/telegram.py` 中实现 `notify_daily_loss_limit_triggered(...)` 及 `create_daily_loss_limit_notify_callback(...)`：  
+        - 封装 Telegram 发送逻辑；  
+        - 在缺少配置时优雅跳过并记录日志。  
+  - [ ] 2.2 在 `bot.py` 的 `_run_iteration()` 中，根据 `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` 创建每日亏损通知回调，并通过 `check_risk_limits(...)` / `check_daily_loss_limit(...)` 的参数将其注入。  
+  - [ ] 2.3 确保同一自然日内仅在首次触发每日亏损阈值时发送通知，不因后续迭代重复发送。
+
+- [ ] **Task 3 – 单元与集成测试（AC3, AC4）**  
+  - [ ] 3.1 在 `tests/test_notifications_telegram.py` 中新增针对每日亏损通知的测试（包括成功路径与错误路径）。  
+  - [ ] 3.2 在 `tests/test_risk_control_integration.py` 或等价文件中添加集成测试，用 mock 回调验证在每日亏损阈值触发场景下恰好调用一次通知逻辑。  
+  - [ ] 3.3 运行 `./scripts/run_tests.sh`，确保所有测试通过，并在 Dev Notes 中记录任何对日志或文案的调整决定。  
+    ]]></tasks>
+  </story>
+
+  <acceptanceCriteria><![CDATA[
+1. AC1 – 通知内容与格式（与 Epic 7.3 / FR18 对齐）：在每日亏损阈值检查首次触发并激活 Kill-Switch 时，通过 Telegram 发送包含亏损百分比、阈值、起始/当前权益与后续操作建议的详细通知，使用 emoji + MarkdownV2，文案风格与 Kill-Switch 通知一致。  
+2. AC2 – 与风控逻辑的集成边界：通知仅依赖于 `check_daily_loss_limit(...)` 的结果，不重新判定阈值；同一自然日内只在 `daily_loss_triggered` 从 False 变为 True 时发送一次通知；通知逻辑不修改 `RiskControlState`，在 Telegram 未配置时优雅跳过。  
+3. AC3 – 错误处理与可观测性：在通知发送失败（网络/4xx/5xx/Markdown 错误）时记录 WARNING/ERROR 日志并可进行一次降级重试，不影响本地风控逻辑与 Kill-Switch 状态；遵守架构文档中的日志与时间格式约定。  
+4. AC4 – 单元与集成测试覆盖：在 `tests/test_notifications_telegram.py` 中为每日亏损通知增加覆盖，在 `tests/test_risk_control_integration.py` 或等价文件中验证在阈值首次触发场景下通知被恰当调用；运行 `./scripts/run_tests.sh` 全部通过。  
+
+（完整 AC 文本见 Story 文件，实现与验证必须与其保持一一对应，不得增删条目。）
+  ]]></acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+      <doc>
+        <path>docs/prd-risk-control-enhancement.md</path>
+        <title>风控系统增强 - 产品需求文档</title>
+        <section>每日亏损限制功能</section>
+        <snippet>定义了每日亏损限制的整体行为（FR12–FR18），包括通过 DAILY_LOSS_LIMIT_PCT 配置每日最大亏损百分比、计算当日权益变化百分比，以及在达到阈值时自动激活 Kill-Switch 并发送包含详细信息的通知。本 Story 聚焦通知部分。</snippet>
+      </doc>
+      <doc>
+        <path>docs/epic-risk-control-enhancement.md</path>
+        <title>风控系统增强 - Epic 与 Story 分解</title>
+        <section>Epic 7.3 / Story 7.3.4</section>
+        <snippet>Story 7.3.4 要求在每日亏损阈值触发后，通过 Telegram 发送详细通知，内容包括亏损百分比、阈值、起始/当前权益与操作建议，并为 Epic 7.4 的 Telegram 命令提供上下文。</snippet>
+      </doc>
+      <doc>
+        <path>docs/epics.md</path>
+        <title>LLM-trader-test - Epic Breakdown</title>
+        <section>Epic 7.3: 每日亏损限制功能（Post-MVP）</section>
+        <snippet>Epic 7.3 下四个 Story（7-3-1~7-3-4）分别负责每日基准记录、每日亏损计算、阈值触发与通知集成，本 Story 是通知层的最后一环。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/7-3-1-实现每日起始权益记录.md</path>
+        <title>Story 7.3.1: 实现每日起始权益记录</title>
+        <section>Acceptance Criteria / Dev Notes</section>
+        <snippet>定义并实现了 `update_daily_baseline(...)` helper，在每个自然日维护 `daily_start_equity` / `daily_start_date`，为每日亏损计算和阈值触发提供可靠基准。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/7-3-2-实现每日亏损百分比计算.md</path>
+        <title>Story 7.3.2: 实现每日亏损百分比计算</title>
+        <section>Acceptance Criteria / Dev Notes</section>
+        <snippet>实现了 `calculate_daily_loss_pct(state, current_equity)` helper，基于 `daily_start_equity` 与当前权益计算当日亏损百分比，并处理 0/None/负数等边界场景，是通知中展示亏损百分比与金额的直接数据来源。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/7-3-3-实现每日亏损阈值触发.md</path>
+        <title>Story 7.3.3: 实现每日亏损阈值触发</title>
+        <section>Acceptance Criteria / Dev Notes</section>
+        <snippet>在 `check_daily_loss_limit(...)` 中实现每日亏损阈值比较并激活 Kill-Switch，同时通过回调预留 `notify_daily_loss_limit_triggered(...)` 的触发点，本 Story 在该触发点上补齐通知实现。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/07-implementation-patterns.md</path>
+        <title>架构分片：实现模式与一致性规则</title>
+        <section>7.3 数据与格式模式 / 7.8 测试与校验模式</section>
+        <snippet>规定统一的时间/日志/测试模式：使用 UTC ISO 8601 时间、结构化日志与 pytest 测试；本 Story 中每日亏损通知的日志与测试需遵循这些一致性规则。</snippet>
+      </doc>
+    </docs>
+
+    <code>
+      <codeArtifact>
+        <path>notifications/telegram.py</path>
+        <kind>notifications</kind>
+        <symbol>build_daily_loss_limit_triggered_message / notify_daily_loss_limit_triggered / create_daily_loss_limit_notify_callback / send_telegram_message</symbol>
+        <lines>37-150, 400-547</lines>
+        <reason>集中定义 Telegram 通知构建与发送逻辑，包含每日亏损限制通知的文案与回调工厂，是本 Story 的主要实现位置。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>core/risk_control.py</path>
+        <kind>risk-control</kind>
+        <symbol>check_daily_loss_limit / check_risk_limits / RiskControlState</symbol>
+        <lines>182-402</lines>
+        <reason>每日亏损阈值检查与 Kill-Switch 激活逻辑所在位置，通过回调触发通知；本 Story 需要与这些 helper 正确集成。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>bot.py</path>
+        <kind>main-loop</kind>
+        <symbol>_run_iteration / create_daily_loss_limit_notify_callback usage</symbol>
+        <lines>623-669</lines>
+        <reason>在每轮迭代中计算 `total_equity`、调用 `update_daily_baseline(...)` 与 `check_risk_limits(...)`，并构造每日亏损通知回调注入风控入口，是通知触发链路的上游。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>tests/test_notifications_telegram.py</path>
+        <kind>tests</kind>
+        <symbol>Daily loss limit notification tests (to add)</symbol>
+        <lines>n/a</lines>
+        <reason>用于为每日亏损限制通知添加单元测试，验证文案、错误处理与配置缺失场景的行为。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>tests/test_risk_control_integration.py</path>
+        <kind>tests</kind>
+        <symbol>RiskControlIntegration / DailyBaselineIntegration / KillSwitchIntegration</symbol>
+        <lines>177-460, 591-693</lines>
+        <reason>已有风险控制与 Kill-Switch 持久化/集成测试，用于扩展覆盖「日亏触发 → 通知回调被调用」的端到端场景。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>config/settings.py</path>
+        <kind>config</kind>
+        <symbol>RISK_CONTROL_ENABLED / DAILY_LOSS_LIMIT_ENABLED / DAILY_LOSS_LIMIT_PCT</symbol>
+        <lines>592-610</lines>
+        <reason>集中定义风控开关与每日亏损阈值配置，本 Story 需要在通知文案中引用这些配置的实际值。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>data/ai_decisions.csv</path>
+        <kind>data-schema</kind>
+        <symbol>RISK_CONTROL action rows</symbol>
+        <lines>n/a</lines>
+        <reason>PRD 要求将风控事件记录到 ai_decisions.csv，本 Story 的通知行为需要与现有风控事件记录保持一致，便于审计。</reason>
+      </codeArtifact>
+    </code>
+
+    <dependencies>
+      <dependency ecosystem="python" name="pandas" version="2.2.3" />
+      <dependency ecosystem="python" name="numpy" version="2.1.3" />
+      <dependency ecosystem="python" name="requests" version="2.31.0" />
+      <dependency ecosystem="python" name="python-binance" version="1.0.19" />
+      <dependency ecosystem="python" name="hyperliquid-python-sdk" version=">=0.9.0" />
+      <dependency ecosystem="python" name="ccxt" version="(unspecified)" />
+      <dependency ecosystem="python" name="colorama" version="0.4.6" />
+      <dependency ecosystem="python" name="streamlit" version="1.38.0" />
+    </dependencies>
+  </artifacts>
+
+  <constraints><![CDATA[
+- 通知逻辑必须建立在已实现的每日基准（Story 7.3.1）、每日亏损计算（Story 7.3.2）与阈值触发（Story 7.3.3）之上，不得在本 Story 中重复实现这些逻辑。  
+- 通知仅消费 `check_daily_loss_limit(...)` 提供的参数与 `RiskControlState` 字段，不得在通知模块中重新判断阈值或修改风险控制状态。  
+- 通知失败（网络/Markdown 等）不得影响 Kill-Switch 状态与每日亏损阈值触发语义；本 Story 只负责可观测性与用户提示。  
+- 所有日志与时间字段必须遵循 `docs/architecture/07-implementation-patterns.md` 中的统一格式：UTC ISO 8601 时间、结构化字段与适当的日志级别（INFO/WARNING/ERROR）。  
+- 通知实现不得引入除 Telegram 以外的新外部依赖或长时间阻塞调用，发送失败时应快速返回并记录日志。  
+  ]]></constraints>
+
+  <interfaces>
+    <interface>
+      <name>build_daily_loss_limit_triggered_message</name>
+      <kind>function</kind>
+      <signature>build_daily_loss_limit_triggered_message(*, loss_pct: float, limit_pct: float, daily_start_equity: float, current_equity: float) -&gt; str</signature>
+      <path>notifications/telegram.py</path>
+    </interface>
+    <interface>
+      <name>notify_daily_loss_limit_triggered</name>
+      <kind>function</kind>
+      <signature>notify_daily_loss_limit_triggered(*, loss_pct: float, limit_pct: float, daily_start_equity: float, current_equity: float, bot_token: str, chat_id: str, send_fn: Optional[Callable[..., None]] = None) -&gt; bool</signature>
+      <path>notifications/telegram.py</path>
+    </interface>
+    <interface>
+      <name>create_daily_loss_limit_notify_callback</name>
+      <kind>function</kind>
+      <signature>create_daily_loss_limit_notify_callback(bot_token: str, chat_id: str, send_fn: Optional[Callable[..., None]] = None) -&gt; Optional[Callable[[float, float, float, float], None]]</signature>
+      <path>notifications/telegram.py</path>
+    </interface>
+    <interface>
+      <name>check_daily_loss_limit</name>
+      <kind>function</kind>
+      <signature>check_daily_loss_limit(state: RiskControlState, current_equity: float, *, daily_loss_limit_enabled: bool = True, daily_loss_limit_pct: float = 5.0, risk_control_enabled: bool = True, positions_count: int = 0, notify_fn: Optional[Callable[[float, float, float, float], None]] = None, record_event_fn: Optional[Callable[[str, str], None]] = None) -&gt; bool</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+    <interface>
+      <name>check_risk_limits</name>
+      <kind>function</kind>
+      <signature>check_risk_limits(risk_control_state: RiskControlState, total_equity: Optional[float] = None, iteration_time: Optional[datetime] = None, risk_control_enabled: bool = True, *, daily_loss_limit_enabled: bool = True, daily_loss_limit_pct: float = 5.0, positions_count: int = 0, notify_daily_loss_fn: Optional[Callable[[float, float, float, float], None]] = None, record_event_fn: Optional[Callable[[str, str], None]] = None) -&gt; bool</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+    <interface>
+      <name>send_telegram_message</name>
+      <kind>function</kind>
+      <signature>send_telegram_message(*, bot_token: str, default_chat_id: str, text: str, chat_id: Optional[str] = None, parse_mode: Optional[str] = "Markdown") -&gt; None</signature>
+      <path>notifications/telegram.py</path>
+    </interface>
+  </interfaces>
+
+  <tests>
+    <standards><![CDATA[
+- 使用 pytest 作为测试框架，所有测试位于 `tests/` 目录中，文件命名为 `test_*.py`。  
+- 通知相关测试应重点覆盖：配置缺失、网络错误、Markdown 解析失败与正常发送等路径，保证在各种异常情况下风控逻辑仍然稳定。  
+- 对于集成测试，可通过注入 mock 发送函数与通知回调，避免真实访问 Telegram API，同时验证通知触发次数与参数。  
+    ]]></standards>
+    <locations><![CDATA[
+- tests/test_notifications_telegram.py  
+- tests/test_risk_control_integration.py  
+    ]]></locations>
+    <ideas><![CDATA[
+- AC1：为 `build_daily_loss_limit_triggered_message(...)` 添加测试，构造典型数值（例如 daily_start_equity=10000, current_equity=9400, limit_pct=5.0），断言生成文案中包含正确的百分比与金额，并且包含明确的 Kill-Switch 与后续操作提示。  
+- AC2：在 `tests/test_risk_control_integration.py` 中构造场景：通过设置 `daily_start_equity` 与 `current_equity` 触发 `check_daily_loss_limit(...)`，注入 mock 通知回调并断言其仅在首次触发时被调用一次。  
+- AC3：在 `tests/test_notifications_telegram.py` 中使用 monkeypatch 或 mock 替换 `send_telegram_message`，模拟网络错误与 Markdown 解析错误，验证日志内容与 fallback 行为。  
+- AC4：运行 `./scripts/run_tests.sh`，确认在新增通知逻辑与测试后，所有既有 Kill-Switch / 每日基准 / 每日亏损计算 / 风控集成相关测试仍全部通过。  
+    ]]></ideas>
+  </tests>
+</story-context>
