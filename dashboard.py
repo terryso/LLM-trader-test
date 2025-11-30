@@ -73,13 +73,15 @@ def resolve_risk_free_rate() -> float:
 RISK_FREE_RATE = resolve_risk_free_rate()
 
 BINANCE_CLIENT: Client | None = None
-if BN_API_KEY and BN_SECRET:
-    try:
-        BINANCE_CLIENT = Client(BN_API_KEY, BN_SECRET, testnet=False)
-    except Exception as exc:
-        logging.warning("Unable to initialize Binance client: %s", exc)
-else:
-    logging.info("Binance credentials not provided; live prices disabled.")
+# Only initialize Binance client when using Binance as market data backend
+if MARKET_DATA_BACKEND == "binance":
+    if BN_API_KEY and BN_SECRET:
+        try:
+            BINANCE_CLIENT = Client(BN_API_KEY, BN_SECRET, testnet=False)
+        except Exception as exc:
+            logging.warning("Unable to initialize Binance client: %s", exc)
+    else:
+        logging.info("Binance credentials not provided; live prices disabled.")
 
 
 def load_csv(path: Path, parse_dates: List[str] | None = None) -> pd.DataFrame:
