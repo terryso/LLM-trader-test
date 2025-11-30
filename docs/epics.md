@@ -305,7 +305,7 @@ So that switching or adding exchanges is predictable and low-risk.
 
 ---
 
-## FR Coverage Matrix
+## FR Coverage Map
 
 | FR ID  | Epic                                      | Stories             |
 |-------|-------------------------------------------|---------------------|
@@ -316,6 +316,125 @@ So that switching or adding exchanges is predictable and low-risk.
 
 ## Summary
 
-- 当前版本包含 2 个已规划 Epic：  
-  - 平台能力 Epic 1：统一支持任意 OpenAI 协议兼容 LLM 提供商，并通过 Story 1.1 覆盖最基础的「环境变量配置与切换」能力。  
-  - 交易执行 Epic 6：统一交易所执行层 & 多交易所可插拔支持，并通过 Story 6.1–6.5 规划从抽象设计到 Binance / Hyperliquid 适配与迁移的完整路径。  
+- 当前版本包含 3 个已规划 Epic：  
+- 平台能力 Epic 1：统一支持任意 OpenAI 协议兼容 LLM 提供商，并通过 Story 1.1 覆盖最基础的「环境变量配置与切换」能力。  
+- 交易执行 Epic 6：统一交易所执行层 & 多交易所可插拔支持，并通过 Story 6.1–6.5 规划从抽象设计到 Binance / Hyperliquid 适配与迁移的完整路径。  
+- 安全与风控 Epic 7：风控系统增强（Emergency Controls），通过 Epic 7.1–7.4 规划从风控基础设施、Kill-Switch、每日亏损限制到 Telegram 命令集成的完整路径，并与独立风控 PRD 对齐。  
+
+## Epic 7: 风控系统增强（Emergency Controls）
+
+### Epic 7 概述
+
+**背景 / 问题**
+
+- 当前 Bot 已有基础风险控制与资金管理（单笔风险、必带止损等），但缺乏**系统级应急控制能力**：
+  - 无法在发现策略失效或市场异常时，一键「拉闸」停止新开仓；
+  - 无法基于每日亏损动态收紧风险；
+  - 缺少通过 Telegram 命令远程控制风控状态的能力。
+- README / 主 PRD 已在路线图中提到 Kill-Switch 等能力，但尚未在 Epic 层正式建模并与 Story 对齐。
+
+**目标**
+
+- 为 DeepSeek Paper Trading Bot 建立一条「应急控制（Emergency Controls）」能力线，涵盖：
+  - 统一的风控状态模型与持久化（RiskControlState）；
+  - Kill-Switch（紧急停止）；
+  - 每日亏损限制（Daily Loss Limit）；
+  - 通过 Telegram 的远程控制命令。
+- 在 MVP 阶段，至少保证：
+  - 风控状态模型 + 主循环集成（Epic 7.1 完整交付）；
+  - Kill-Switch 可通过配置/内部逻辑激活并**可靠阻止新开仓**（Story 7-2-1）。
+
+---
+
+### Epic 7.1: 风控状态管理基础设施（MVP）
+
+> 对应 Tech Spec：`docs/sprint-artifacts/tech-spec-epic-7-1.md`  
+> 对应 PRD：`docs/prd-risk-control-enhancement.md` 中「风控状态管理」部分
+
+**范围（In Scope）**
+
+- 定义 `RiskControlState` 数据结构，统一承载 Kill-Switch 与每日亏损等风控状态。
+- 将风控状态持久化到 `portfolio_state.json.risk_control`，使用原子写入并保持向后兼容。
+- 在 `bot.py` 主循环中集成风控状态加载、检查与保存，为后续 Epic 7.2 / 7.3 / 7.4 预留入口。
+
+**Stories**
+
+- 7-1-1 定义 RiskControlState 数据结构（done）
+- 7-1-2 添加风控相关环境变量（done）
+- 7-1-3 实现风控状态持久化（done）
+- 7-1-4 集成风控状态到主循环（done）
+
+> 本 Epic 已完整交付，为后续 Kill-Switch / 日亏 / Telegram 功能提供技术基座。详见 Epic Retro：  
+> `docs/sprint-artifacts/epic-7-1-retro-risk-control.md`
+
+---
+
+### Epic 7.2: Kill-Switch 核心功能（部分纳入 MVP）
+
+> 对应 PRD：`docs/prd-risk-control-enhancement.md` 中「Kill-Switch 功能」部分
+
+**范围（In Scope）**
+
+- 基于 `RiskControlState` 与风控配置，实现 Kill-Switch 的：
+  - 激活/判定逻辑；
+  - 对 LLM 决策的拦截规则（阻止 entry，允许 close + SL/TP）。
+- 支持通过环境变量 `KILL_SWITCH`、后续的 Telegram 命令等方式控制 Kill-Switch 状态。
+
+**MVP 子集**
+
+- 7-2-1 实现 Kill-Switch 激活逻辑（ready-for-dev）  
+  - 定义 `KILL_SWITCH` 与持久化状态之间的优先级规则（env 优先）；  
+  - 在 `_run_iteration()` 开始阶段通过 `check_risk_limits()` 判定是否应阻止本轮 entry；  
+  - 在 Kill-Switch 激活时拒绝所有 `signal="entry"`，但保留 `signal="close"` 与现有 SL/TP 检查。
+
+**Post-MVP（规划中）**
+
+- 7-2-2 实现 Kill-Switch 解除逻辑  
+- 7-2-3 实现信号过滤逻辑（例如只允许风险减轻方向的操作）  
+- 7-2-4 确保 SL/TP 在 Kill-Switch 期间正常工作（迭代细化现有逻辑与日志）  
+- 7-2-5 实现 Kill-Switch 状态变更通知（与 Telegram / 仪表盘对齐）
+
+---
+
+### Epic 7.3: 每日亏损限制功能（Post-MVP）
+
+> 对应 PRD：`docs/prd-risk-control-enhancement.md` 中「每日亏损限制」部分
+
+**范围（In Scope）**
+
+- 基于 `RiskControlState.daily_start_equity` / `daily_start_date` / `daily_loss_pct`：
+  - 记录每日起始权益并在 UTC 跨日自动重置；
+  - 在每次迭代计算当日亏损百分比，与 `DAILY_LOSS_LIMIT_PCT` 对比；
+  - 当达到阈值时自动激活 Kill-Switch。
+
+**Stories（规划中）**
+
+- 7-3-1 实现每日起始权益记录  
+- 7-3-2 实现每日亏损百分比计算  
+- 7-3-3 实现每日亏损阈值触发（联动 Kill-Switch）  
+- 7-3-4 实现每日亏损限制通知
+
+> 全部视为 **post-MVP**，在 Kill-Switch 核心功能稳定后分批进入。
+
+---
+
+### Epic 7.4: Telegram 命令集成（Post-MVP）
+
+> 对应 PRD：`docs/prd-risk-control-enhancement.md` 中「Telegram 命令集成」部分
+
+**范围（In Scope）**
+
+- 基于已持久化的 `RiskControlState` 与 Kill-Switch / 日亏逻辑：
+  - 通过 Telegram 命令 `/kill`、`/resume`、`/status`、`/reset_daily` 等远程控制风控状态；
+  - 对敏感操作（特别是 `/resume`）进行二次确认；
+  - 确保只有授权的 `TELEGRAM_CHAT_ID` 能触发命令。
+
+**Stories（规划中）**
+
+- 7-4-1 实现 Telegram 命令接收机制  
+- 7-4-2 实现 kill 和 resume 命令（含二次确认）  
+- 7-4-3 实现 status 命令（展示当前风控状态与关键字段）  
+- 7-4-4 实现 reset-daily 命令（重置每日亏损基准）  
+- 7-4-5 实现 help 命令和安全校验
+
+> 整个 Epic 7.4 为 **post-MVP**，在 Kill-Switch + 日亏逻辑稳定后作为 UX/操控能力增强。

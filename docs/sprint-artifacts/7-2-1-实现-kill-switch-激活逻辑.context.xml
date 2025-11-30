@@ -1,0 +1,133 @@
+<story-context id=".bmad/bmm/workflows/4-implementation/story-context/template" v="1.0">
+  <metadata>
+    <epicId>7.2</epicId>
+    <storyId>7.2.1</storyId>
+    <title>实现 Kill-Switch 激活逻辑</title>
+    <status>ready-for-dev</status>
+    <generatedAt>2025-11-30T16:16:00+08:00</generatedAt>
+    <generator>BMAD Story Context Workflow</generator>
+    <sourceStoryPath>docs/sprint-artifacts/7-2-1-实现-kill-switch-激活逻辑.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA>As a trading-bot operator running the bot unattended</asA>
+    <iWant>I want a Kill-Switch mechanism that can be reliably activated based on configuration and runtime checks</iWant>
+    <soThat>so that I can immediately stop all new entries while keeping existing positions and SL/TP protections working</soThat>
+    <tasks>
+- Task 1 – 定义 Kill-Switch 激活与优先级规则（AC1, AC4）
+  - 1.1 在 core/risk_control.py 中补充/整理帮助函数（例如 activate_kill_switch(reason, triggered_at)），集中管理 RiskControlState 上的 Kill-Switch 字段更新。
+  - 1.2 在 core/state.load_state() 或 core/risk_control 初始化路径中实现 KILL_SWITCH 环境变量与持久化状态的优先级逻辑：优先使用环境变量，未设置时回退到状态文件。
+  - 1.3 确保上述逻辑不改变每日亏损字段的现有行为，只负责 Kill-Switch 相关字段。
+
+- Task 2 – 集成 Kill-Switch 与风控检查入口（AC2, AC3）
+  - 2.1 在 check_risk_limits(...) 中读取当前 RiskControlState 与配置，当 Kill-Switch 激活时返回可被主循环检测到的「禁止 entry」标志。
+  - 2.2 在 _run_iteration() 或封装调用中，根据风控检查结果决定是否允许处理当轮的 entry 决策。
+  - 2.3 在 execution/executor.py / execution/routing.py 中增加最小改动，确保当 Kill-Switch 激活时不会下达新的 ENTRY 订单，同时不影响 close 与 SL/TP 路径。
+
+- Task 3 – 持久化与重启行为验证（AC4）
+  - 3.1 在集成测试中模拟：第一次运行中激活 Kill-Switch 并保存状态，随后通过 core.state.load_state() 重启，验证状态保持。
+  - 3.2 覆盖状态文件缺失/损坏场景，确认本 Story 的逻辑在异常情况下不会引发未捕获异常。
+
+- Task 4 – 日志与测试完善（AC5）
+  - 4.1 在 Kill-Switch 激活路径中添加结构化日志条目，记录原因与上下文。
+  - 4.2 在现有 tests/test_risk_control_integration.py 中增加对日志的断言（使用 caplog 等），确保关键事件被记录。
+  - 4.3 运行完整测试套件（例如 ./scripts/run_tests.sh），确认无回归。
+    </tasks>
+  </story>
+
+  <acceptanceCriteria>
+AC1 – Kill-Switch 状态与优先级语义：
+- 使用 RiskControlState.kill_switch_active / kill_switch_reason / kill_switch_triggered_at 作为单一真实来源。
+- 启动时：若环境变量 KILL_SWITCH 显式为 true/false，则以环境变量为准并覆盖持久化状态；未设置时沿用 portfolio_state.json.risk_control.kill_switch_active，否则默认 False。
+- 每次从未激活变为激活时必须写入原因和当前 UTC ISO8601 时间戳，不修改每日亏损相关字段。
+
+AC2 – 与风控检查入口集成（check_risk_limits）：
+- core/risk_control.check_risk_limits(total_equity, iteration_time, ...) 在每轮 _run_iteration() 开始阶段被调用。
+- 当 RISK_CONTROL_ENABLED=False 时保持占位行为，仅记录 INFO 日志并返回。
+- 当 RISK_CONTROL_ENABLED=True 且 kill_switch_active=True 时，以可测试的方式向调用方返回「禁止新开仓」信号；当 kill_switch_active=False 时不改变现有行为。
+
+AC3 – Kill-Switch 激活后的交易行为约束：
+- Kill-Switch 处于激活状态时，所有 signal="entry" 的 LLM 决策在进入执行层之前或之中被统一拦截，不产生新仓位或新订单。
+- 拦截需记录清晰日志（例如 "Kill-Switch active, blocking entry"），并可选地在 ai_decisions.csv 中追加 action="RISK_CONTROL" 类型记录（保持 schema 安全）。
+- 不影响 signal="close" 路径和平仓逻辑，不影响 check_stop_loss_take_profit 等 SL/TP 检查。
+
+AC4 – 持久化与重启语义：
+- 运行时激活 Kill-Switch 时，通过 core.state.save_state() 将 kill_switch_active / reason / triggered_at 一并写入 portfolio_state.json.risk_control。
+- 在 KILL_SWITCH 未显式设置的前提下，下次启动通过 core.state.load_state() 能恢复到 Kill-Switch 激活状态。
+- 状态文件损坏或缺失时，沿用 Epic 7.1 中已实现的容错逻辑：回退到默认 RiskControlState 并记录 ERROR。
+
+AC5 – 日志与测试覆盖：
+- Kill-Switch 激活时至少产生一条结构化 WARNING 或 INFO 日志，包含激活原因和关键上下文（如 total_equity）。
+- 日志格式与位置遵循 architecture/07-implementation-patterns.md 中的日志模式，不引入新的日志根入口。
+- 通过单元与集成测试覆盖 env vs 持久化优先级、防 entry/允 close 和 SL/TP、重启后状态保持与日志行为，并保持现有 7.1.x 测试全部通过。
+  </acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+- path: docs/prd-risk-control-enhancement.md; section: "Kill-Switch（紧急停止）"; snippet: 定义通过环境变量 KILL_SWITCH 和 Telegram 命令 kill/resume 控制暂停新开仓，仅阻止新 entry，保留现有持仓与 SL/TP 检查，并要求 Kill-Switch 状态持久化到 portfolio_state.json。
+- path: docs/prd-risk-control-enhancement.md; section: "风控状态管理"; snippet: 规定系统维护全局 RiskControlState，在每次迭代开始/结束加载和保存，并作为 Kill-Switch 与每日亏损功能的统一状态载体。
+- path: docs/prd-risk-control-enhancement.md; section: "Kill-Switch 测试场景"; snippet: 给出设置 KILL_SWITCH=true 启动、Kill-Switch 激活时 entry/close/SLTP 行为的期望，为本 Story 的测试设计提供直接用例。
+- path: docs/sprint-artifacts/tech-spec-epic-7-1.md; section: "Data Models and Contracts - RiskControlState"; snippet: 定义 RiskControlState 字段（包括 kill_switch_active/reason/triggered_at 和每日亏损相关字段）以及 from_dict/to_dict 行为，并指出状态文件向后兼容策略。
+- path: docs/sprint-artifacts/tech-spec-epic-7-1.md; section: "Workflows and Sequencing"; snippet: 描述 bot.py 启动和 _run_iteration() 时序，要求在数据输入后、策略分析前调用 core.risk_control.check_risk_limits()，并通过 core.state.load_state/save_state 管理 risk_control 字段。
+- path: docs/sprint-artifacts/epic-7-1-retro-risk-control.md; section: "4. 关键经验与教训"; snippet: 总结了配置/状态/行为三层分离及 single-source-of-truth 的实践，并明确建议在 Epic 7.2 落实 KILL_SWITCH 与持久化状态的优先级规则。
+- path: docs/architecture/02-components.md; section: "2.2 核心业务层"; snippet: 说明 core/state.py 与 core/persistence.py 负责状态管理和 JSON 持久化，core/risk_control.py 是风控状态与检查逻辑所在层，不应在上层模块中直接操作文件或环境变量。
+- path: docs/architecture/03-data-flow.md; section: "3.1 实时交易路径"; snippet: 给出从状态加载、指标计算、LLM 决策到执行与持久化的整体数据流，为在何处插入 Kill-Switch 检查、在哪个阶段阻止 entry 提供约束。
+- path: docs/architecture/06-project-structure-and-mapping.md; section: "6.2 PRD 功能块到架构组件的映射"; snippet: 将风险控制与资金管理映射到 execution/routing.py 与 core/metrics.py，同时将数据持久化映射到 core/state.py 与 core/persistence.py，约束 Kill-Switch 行为应复用这些组件。
+- path: docs/architecture/07-implementation-patterns.md; section: "7.5 生命周期与错误处理"; snippet: 要求网络/外部错误记录日志并尽量不中断主循环，强调使用统一日志格式和可复用错误处理模式，这些对 Kill-Switch 的日志与失败路径设计相关。
+    </docs>
+
+    <code>
+- path: core/risk_control.py; kind: core; symbol: RiskControlState, check_risk_limits; lines: 77-124; reason: 集中管理风控状态和风控检查入口，是实现 Kill-Switch 激活规则与拦截 entry 的主要位置。
+- path: core/state.py; kind: core; symbol: load_state, save_state, get_risk_control_state; lines: 72-150; reason: 统一从 portfolio_state.json 读取/写入 risk_control 字段，并在文件缺失或损坏时回退到默认状态，是 Kill-Switch 跨重启保持的关键。
+- path: bot.py; kind: entrypoint; symbol: main, _run_iteration; lines: 548-628, 592-598; reason: 主循环调用 core.state.load_state/save_state 和 core.risk_control.check_risk_limits() 的位置，需要根据风控检查结果阻止新的 entry 决策。
+- path: execution/executor.py; kind: service; symbol: TradeExecutor.process_decisions, execute_entry, execute_close; lines: N/A; reason: 负责将 LLM 决策转化为交易操作，需要在 Kill-Switch 激活时尊重「禁止 entry、允许 close」的约束。
+- path: execution/routing.py; kind: service; symbol: compute_entry_plan, route_live_entry; lines: N/A; reason: 封装实际下单逻辑，Kill-Switch 应在进入真实下单前确保不触发新的 entry。
+- path: notifications/logging.py; kind: infra; symbol: 日志配置; lines: N/A; reason: 提供统一日志格式和级别配置，Kill-Switch 激活/变化的关键事件应通过该体系输出。
+- path: tests/test_risk_control.py; kind: test; symbol: RiskControlState tests, config tests; lines: N/A; reason: 已包含对 RiskControlState 和配置解析的单元测试，是为本 Story 扩展 Kill-Switch 环境变量优先级测试的自然位置。
+- path: tests/test_risk_control_integration.py; kind: test; symbol: RiskControlStatePersistenceTests, RiskControlCheckIntegrationTests; lines: 168-334; reason: 已覆盖 risk_control 持久化与 check_risk_limits() 入口，需在此增加「Kill-Switch 激活阻止 entry、跨重启保持状态」的集成测试。
+- path: tests/test_state_management.py; kind: test; symbol: State management tests; lines: N/A; reason: 验证 core.state 的状态协调和持久化行为，Kill-Switch 状态与其它状态字段一起读写时需保持一致性。
+    </code>
+
+    <dependencies>
+- ecosystem: python; requirements: python-binance==1.0.19, pandas==2.2.3, numpy==2.1.3, requests==2.31.0, python-dotenv==1.0.0, colorama==0.4.6, streamlit==1.38.0, hyperliquid-python-sdk&gt;=0.9.0, eth-account&gt;=0.10.0, ccxt, streamlit-autorefresh, cryptography。
+- runtime: Python 3.13.3（参见 architecture/07-implementation-patterns.md）。
+- external services: Binance REST API（行情）、OpenRouter/DeepSeek Chat（LLM）、Hyperliquid Perpetuals（实盘）、Telegram Bot API（通知与未来的命令）。
+    </dependencies>
+  </artifacts>
+
+  <constraints>
+- 遵循分层架构：Kill-Switch 状态与逻辑位于 core/ 层，主循环在 bot.py / core/trading_loop.py 中协调，execution/ 与 exchange/ 负责实际执行；strategy/、llm/、display/ 不直接访问 RiskControlState 或环境变量。
+- 状态持久化必须通过 core/state.py 与 core/persistence.py 统一入口，继续使用原子写入，不新增平行的 JSON/CSV 状态文件。
+- KILL_SWITCH 环境变量与持久化状态冲突时，环境变量优先（特别是 KILL_SWITCH=true 应总是激活 Kill-Switch），该规则需要在实现中显式体现。
+- 日志必须使用 notifications/logging.py 约定的格式和级别，并避免在多个模块中引入新的 Logger Root；Kill-Switch 相关日志应易于 grep 和监控。
+- 性能约束：风控检查对每轮迭代的额外开销应维持在极小范围内（仅内存逻辑和少量日志），不得引入阻塞性 I/O。
+- 不在本 Story 中修改每日亏损逻辑，避免与 Epic 7.3 的职责交叉；相关字段仅作为将来扩展的预留。
+  </constraints>
+
+  <interfaces>
+- name: RiskControlState; kind: dataclass; signature: class RiskControlState(kill_switch_active: bool, kill_switch_reason: Optional[str], kill_switch_triggered_at: Optional[str], daily_start_equity: Optional[float], daily_start_date: Optional[str], daily_loss_pct: float, daily_loss_triggered: bool); path: core/risk_control.py。
+- name: check_risk_limits; kind: function; signature: check_risk_limits(total_equity, iteration_time, ...); path: core/risk_control.py。
+- name: load_state / save_state; kind: functions; signature: load_state() -&gt; None, save_state() -&gt; None; path: core/state.py。
+- name: TradeExecutor.process_decisions; kind: method; signature: process_decisions(decisions, ...); path: execution/executor.py。
+  </interfaces>
+
+  <tests>
+    <standards>
+项目采用 pytest 作为测试框架，测试集中在 tests/ 目录下，风控相关测试分布在 tests/test_risk_control.py、tests/test_risk_control_config.py、tests/test_risk_control_integration.py 以及部分状态管理测试中。Tech Spec 要求 RiskControlState、配置解析、状态持久化与恢复以及 check_risk_limits() 行为均有对应的单元与集成测试，并保持较高的覆盖率（行覆盖率约 90% 以上）。
+    </standards>
+    <locations>
+- tests/test_risk_control.py
+- tests/test_risk_control_config.py
+- tests/test_risk_control_integration.py
+- tests/test_state_management.py
+- tests/
+    </locations>
+    <ideas>
+- AC1：编写单元测试覆盖 KILL_SWITCH 环境变量与持久化状态的优先级逻辑，包括 KILL_SWITCH=true/false/未设置 三种情况以及状态文件中 kill_switch_active 的不同取值。
+- AC2：在集成测试中通过 monkeypatch 或 fixture 控制 RiskControlState 和 RISK_CONTROL_ENABLED，验证 check_risk_limits() 在不同组合下返回的「禁止 entry」标志是否符合预期。
+- AC3：构造包含 entry/close 混合信号的决策集合，在 Kill-Switch 激活前后运行一次主循环或 TradeExecutor.process_decisions()，断言 entry 不会产生新仓位，而 close 与 SL/TP 行为保持正常。
+- AC4：通过 tests/test_risk_control_integration.py 模拟「运行中激活 Kill-Switch → save_state() → 重启 → load_state()」的场景，验证在未设置 KILL_SWITCH 环境变量时 Kill-Switch 状态保持激活，在设置显式 KILL_SWITCH=false 时会按预期关闭。
+- AC5：使用 caplog 捕获日志，验证 Kill-Switch 激活时输出包含原因和关键上下文的 WARNING/INFO 记录，同时确保未引入新的 Logger Root 或格式偏差。
+    </ideas>
+  </tests>
+</story-context>
