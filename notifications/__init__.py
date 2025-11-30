@@ -13,14 +13,25 @@ from notifications.logging import (
     emit_entry_console_log,
     emit_close_console_log,
 )
+from notifications.telegram_commands import (
+    TelegramCommand,
+    TelegramCommandHandler,
+    create_command_handler,
+    process_telegram_commands,
+)
 
 __all__ = [
-    # Telegram
+    # Telegram notifications
     "send_telegram_message",
     "send_entry_signal_to_telegram",
     "send_close_signal_to_telegram",
     "strip_ansi_codes",
     "escape_markdown",
+    # Telegram commands
+    "TelegramCommand",
+    "TelegramCommandHandler",
+    "create_command_handler",
+    "process_telegram_commands",
     # Logging
     "log_ai_message",
     "record_iteration_message",

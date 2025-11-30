@@ -1,0 +1,191 @@
+<story-context id=".bmad/bmm/workflows/4-implementation/story-context/template" v="1.0">
+  <metadata>
+    <epicId>7.4</epicId>
+    <storyId>1</storyId>
+    <title>实现 Telegram 命令接收机制</title>
+    <status>drafted</status>
+    <generatedAt>2025-12-01T00:20:00+08:00</generatedAt>
+    <generator>BMAD Story Context Workflow (manual agent execution)</generator>
+    <sourceStoryPath>docs/sprint-artifacts/7-4-1-实现-telegram-命令接收机制.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA><![CDATA[As a system]]></asA>
+    <iWant><![CDATA[I want to receive and parse Telegram commands]]></iWant>
+    <soThat><![CDATA[so that users can remotely control the bot and its risk-control features.]]></soThat>
+    <tasks><![CDATA[
+- [ ] **Task 1 – 设计并实现 Telegram 命令处理器（AC1, AC3）**  
+  - [ ] 1.1 在 `notifications/telegram_commands.py` 中定义 `TelegramCommand` 数据结构（或等价字典约定），包含 `command`、`args`、`chat_id`、`message_id`、`raw_text`、`raw_update` 等字段；  
+  - [ ] 1.2 实现 `TelegramCommandHandler`：  
+        - 管理 `bot_token`、`allowed_chat_id` 与 `last_update_id`；  
+        - 封装调用 Telegram Bot API `getUpdates` 的 HTTP 请求逻辑；  
+        - 从返回的 `result` 数组中过滤并解析命令。  
+  - [ ] 1.3 为异常与错误场景设计统一的日志格式（等级、字段），与现有 `notifications/telegram.py` 中的日志风格保持一致。
+
+- [ ] **Task 2 – 将命令轮询集成到主循环（AC2）**  
+  - [ ] 2.1 在 `config/settings.py` 或等价配置模块中复用 / 补充 Telegram 相关环境变量读取逻辑，确保命令接收与现有通知共享同一 `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` 语义；  
+  - [ ] 2.2 在 `bot.py` 的 `_run_iteration()` 中，根据配置构造 `TelegramCommandHandler` 并调用其 `poll_commands()`（或通过更高层封装、辅助函数完成）；  
+  - [ ] 2.3 设计一个中立的命令分发入口（例如 `process_telegram_commands(commands)` 或回调参数），本 Story 仅负责**触发与传递**，不直接操作 `RiskControlState` 或执行 /kill 等业务动作；  
+  - [ ] 2.4 在 Dev Notes 中记录命令轮询在主循环中的调用顺序与错误处理策略，方便后续 Stories 7.4.2–7.4.5 复用。
+
+- [ ] **Task 3 – 单元测试与运行验证（AC3, AC4）**  
+  - [ ] 3.1 在 `tests/test_notifications_telegram_commands.py` 中新增针对命令解析与 chat 过滤的测试；  
+  - [ ] 3.2 使用模拟 HTTP 客户端 / monkeypatch 方式，为 `getUpdates` 调用构造成功 / 失败 / 非法 payload 场景，并验证错误处理与日志行为；  
+  - [ ] 3.3 运行 `./scripts/run_tests.sh`，确保全部测试通过，并在 Dev Notes 的 Change Log 中记录一次成功运行。
+    ]]></tasks>
+  </story>
+
+  <acceptanceCriteria><![CDATA[
+1. AC1 – 基础命令轮询与解析（对齐 Epic 7.4 / Story 7.4.1 / PRD FR22）：在正确配置 `TELEGRAM_BOT_TOKEN` 与 `TELEGRAM_CHAT_ID` 时，新增模块 `notifications/telegram_commands.py`，提供 `TelegramCommandHandler` 类或等价抽象，通过 Telegram Bot API `getUpdates` 轮询消息，只处理 `message` 类型的以 `/` 开头的文本命令，并解析出 `command`、`args`、`chat_id`、`message_id` 等字段，返回结构化的 `TelegramCommand` 列表。  
+2. AC2 – 与主循环集成（对齐 Epic 7.1 / 7.4 与 PRD「集成点 4. Telegram 集成」）：在 `bot.py` 的 `_run_iteration()` 开始阶段，当存在有效的 Telegram 配置时构造 `TelegramCommandHandler`，每轮调用 `poll_commands()` 拉取新命令，并将解析结果安全传递给后续命令处理入口；本 Story 不实现 /kill、/resume、/status 等具体命令行为，仅负责输入管道。  
+3. AC3 – 安全与健壮性（为 Story 7.4.5 打基础，对齐 PRD FR23–FR24 的技术约束）：`TelegramCommandHandler` 仅返回来自配置 `TELEGRAM_CHAT_ID` 的命令，对于其他 Chat ID 的命令记录 WARNING 日志并丢弃；在网络或解析错误（超时、4xx/5xx、payload 异常）时记录 WARNING/ERROR 日志但不影响主循环执行。  
+4. AC4 – 测试与文档挂钩：新增 `tests/test_notifications_telegram_commands.py`（或等价位置）覆盖 AC1–AC3 的正常与异常路径，运行 `./scripts/run_tests.sh` 时所有测试通过，并在 Dev Notes 中引用 `docs/prd-risk-control-enhancement.md#Telegram-命令集成`、`docs/epic-risk-control-enhancement.md#Story-7.4.1-实现-Telegram-命令接收机制` 与 `docs/epics.md#Epic-7.4-Telegram-命令集成-Post-MVP`。
+
+（完整 AC 文本见 Story 文件，验证时须与 Story 中定义的 Acceptance Criteria 保持一一对应，不得增删条目。）
+  ]]></acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+      <doc>
+        <path>docs/prd-risk-control-enhancement.md</path>
+        <title>风控系统增强 - 产品需求文档</title>
+        <section>Telegram 命令集成</section>
+        <snippet>定义了 Kill-Switch 与每日亏损限制的整体行为，并在 FR22–FR24 中明确提出「通过 Telegram 命令控制风控状态」的需求：系统应支持通过 Webhook 或轮询接收命令，仅响应来自配置 Chat ID 的请求，并对未知命令返回帮助信息。本 Story 专注于命令接收与解析这一前置能力。</snippet>
+      </doc>
+      <doc>
+        <path>docs/epic-risk-control-enhancement.md</path>
+        <title>风控系统增强 - Epic 与 Story 分解</title>
+        <section>Epic 7.4 / Story 7.4.1</section>
+        <snippet>将 Epic 7.4「Telegram 命令集成」拆分为 7.4.1–7.4.5，其中 Story 7.4.1 要求新增 `TelegramCommandHandler`，使用 Telegram Bot API `getUpdates` 轮询消息，并在每次迭代开始时检查新命令，为后续 /kill、/resume、/status 等命令处理提供统一输入管道。</snippet>
+      </doc>
+      <doc>
+        <path>docs/epics.md</path>
+        <title>LLM-trader-test - Epic Breakdown</title>
+        <section>Epic 7.4: Telegram 命令集成（Post-MVP）</section>
+        <snippet>概述 Epic 7.4 的范围：基于已存在的 RiskControlState、Kill-Switch 与每日亏损限制能力，通过 Telegram 命令 `/kill`、`/resume`、`/status`、`/reset_daily`、`/help` 提供远程控制入口。本 Story 对应其中「命令接收机制」部分。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/7-3-4-实现每日亏损限制通知.md</path>
+        <title>Story 7.3.4: 实现每日亏损限制通知</title>
+        <section>Dev Notes / Dev Agent Record</section>
+        <snippet>描述了每日亏损限制通知与 Telegram 文案/日志/错误处理的集成方式，并在通知文案中直接引用了 `/resume confirm`、`/status` 等命令名称，本 Story 在命令解析与过滤时应保证对这些命令名与参数形态的稳定支持。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/06-project-structure-and-mapping.md</path>
+        <title>架构分片：项目结构与映射</title>
+        <section>6.2 PRD 功能块到架构组件的映射（Telegram 通知）</section>
+        <snippet>将 PRD 中的「Telegram 通知」功能映射到 `notifications/telegram.py` 与 `display/formatters.py`，强调通知逻辑集中在 notifications 层。本 Story 在实现命令接收时，需要遵循同样的分层原则，将 Telegram API 调用集中在 notifications 模块。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/07-implementation-patterns.md</path>
+        <title>架构分片：实现模式与一致性规则</title>
+        <section>7.4 通信与耦合模式 / 7.5 生命周期与错误处理</section>
+        <snippet>要求外部服务（包括 Telegram Bot API）通过专门适配层封装，并在错误时使用统一日志格式而不是中断主循环；本 Story 的 `TelegramCommandHandler` 在设计错误处理与日志时需要遵循这些模式。</snippet>
+      </doc>
+    </docs>
+
+    <code>
+      <codeArtifact>
+        <path>notifications/telegram.py</path>
+        <kind>notifications</kind>
+        <symbol>send_telegram_message / notify_kill_switch_activated / notify_daily_loss_limit_triggered</symbol>
+        <lines>37-120, 191-595</lines>
+        <reason>现有 Telegram 通知模块封装了 `sendMessage` 调用与 MarkdownV2 兼容性处理，并提供 Kill-Switch 与每日亏损通知的 helper。本 Story 在实现命令接收时，应复用同一 HTTP 调用与日志模式，避免另起一套调用栈。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>config/settings.py</path>
+        <kind>config</kind>
+        <symbol>TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID / TELEGRAM_SIGNALS_CHAT_ID</symbol>
+        <lines>356-377</lines>
+        <reason>集中定义 Telegram 相关配置来源与默认值，决定何时视为「Telegram 已配置」。`TelegramCommandHandler` 需要依赖这些配置决定是否启用命令轮询，以及允许的 Chat ID。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>bot.py</path>
+        <kind>main-loop</kind>
+        <symbol>send_telegram_message / _run_iteration</symbol>
+        <lines>278-289, 625-708</lines>
+        <reason>主循环通过 `send_telegram_message` 聚合 Telegram 发送逻辑，并在 `_run_iteration()` 中完成风险控制检查、LLM 调用与状态保存。本 Story 需要在 `_run_iteration()` 早期集成命令轮询入口。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>tests/test_notifications_telegram.py</path>
+        <kind>tests</kind>
+        <symbol>TestSendTelegramMessage / TestBuildDailyLossLimitTriggeredMessage / TestCreateDailyLossLimitNotifyCallback</symbol>
+        <lines>1-546</lines>
+        <reason>现有测试使用 `unittest.mock` 与 `pytest` 对 Telegram 发送路径进行覆盖，并验证 Markdown 降级重试与缺失配置时的行为。Story 7.4.1 的命令解析测试应复用类似模式。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>notifications/telegram_commands.py</path>
+        <kind>notifications (planned)</kind>
+        <symbol>TelegramCommandHandler / TelegramCommand</symbol>
+        <lines>1-200</lines>
+        <reason>本 Story 将新增的命令接收与解析模块，负责封装对 Telegram `getUpdates` 的调用、过滤 allowed_chat_id 并返回结构化命令列表。</reason>
+      </codeArtifact>
+    </code>
+
+    <dependencies>
+      <dependency ecosystem="python" name="requests" version="2.31.0" />
+      <dependency ecosystem="python" name="python-dotenv" version="1.0.0" />
+      <dependency ecosystem="python" name="pandas" version="2.2.3" />
+      <dependency ecosystem="python" name="numpy" version="2.1.3" />
+    </dependencies>
+  </artifacts>
+
+  <constraints><![CDATA[
+- 命令接收与解析逻辑必须集中在 `notifications/telegram_commands.py` 中实现，禁止在 `bot.py` 或其它业务模块中直接发起 Telegram HTTP 请求。  
+- 所有 Telegram API 调用（包括 sendMessage 与 getUpdates）应复用一致的错误处理与日志模式：网络异常或 4xx/5xx 响应不得中断主循环，而是记录 WARNING/ERROR 并在下轮迭代重试。  
+- `TelegramCommandHandler` 只负责从 Telegram 拉取与解析命令，不得直接修改 `RiskControlState` 或触发 Kill-Switch / 每日亏损行为；具体业务逻辑由后续 Stories 7.4.2–7.4.5 通过专用处理器完成。  
+- 命令解析需保持向后兼容：以空格拆分参数时，应允许 `/resume confirm` 这类命令安全解析；后续扩展新参数时不得破坏现有命令格式。  
+- `poll_commands()` 每轮调用的时间复杂度与请求超时需受控，避免在 15m 交易周期内对迭代时延产生明显影响；建议通过限制单次 `getUpdates` 的 `timeout` 与返回条数实现。  
+  ]]></constraints>
+
+  <interfaces>
+    <interface>
+      <name>send_telegram_message</name>
+      <kind>function</kind>
+      <signature>send_telegram_message(*, bot_token: str, default_chat_id: str, text: str, chat_id: Optional[str] = None, parse_mode: Optional[str] = &quot;Markdown&quot;) -&gt; None</signature>
+      <path>notifications/telegram.py</path>
+    </interface>
+    <interface>
+      <name>TelegramCommandHandler</name>
+      <kind>class (planned)</kind>
+      <signature>class TelegramCommandHandler(bot_token: str, allowed_chat_id: str, last_update_id: int = 0)</signature>
+      <path>notifications/telegram_commands.py</path>
+    </interface>
+    <interface>
+      <name>TelegramCommandHandler.poll_commands</name>
+      <kind>method (planned)</kind>
+      <signature>poll_commands(self) -&gt; List[TelegramCommand]</signature>
+      <path>notifications/telegram_commands.py</path>
+    </interface>
+    <interface>
+      <name>TelegramCommand</name>
+      <kind>dataclass (planned)</kind>
+      <signature>class TelegramCommand(command: str, args: List[str], chat_id: str, message_id: int, raw_text: str, raw_update: Dict[str, Any])</signature>
+      <path>notifications/telegram_commands.py</path>
+    </interface>
+    <interface>
+      <name>_run_iteration</name>
+      <kind>function</kind>
+      <signature>_run_iteration() -&gt; None</signature>
+      <path>bot.py</path>
+    </interface>
+  </interfaces>
+
+  <tests>
+    <standards><![CDATA[
+- 使用 pytest 作为测试框架，所有测试位于 `tests/` 目录中，文件命名为 `test_*.py`。  
+- Telegram 相关测试应通过 mock `requests.post` / mock 命令处理函数等方式避免真实调用 Telegram API，并验证日志与错误处理行为与 `notifications/telegram.py` 中现有模式一致。  
+- 本 Story 新增的命令解析与轮询测试应纳入项目统一的测试运行入口（例如 `./scripts/run_tests.sh`），确保与现有通知与风控测试共同通过。  
+    ]]></standards>
+    <locations><![CDATA[
+- tests/test_notifications_telegram.py  
+- tests/test_notifications_telegram_commands.py  
+    ]]></locations>
+    <ideas><![CDATA[
+- AC1：在 `tests/test_notifications_telegram_commands.py` 中构造多个包含 `/kill`、`/resume confirm`、`/status` 等命令的 `getUpdates` 响应 payload，验证 `poll_commands()` 能正确解析出 `TelegramCommand` 列表（command/args/chat_id/message_id 等字段）。  
+- AC2：通过 patch `bot.get_binance_client` 与注入假的 `TelegramCommandHandler`，验证 `_run_iteration()` 在 Telegram 已配置的情况下会在风控检查前调用 `poll_commands()`，且在缺少配置时完全跳过命令轮询。  
+- AC3：为未经授权的 `chat_id` 构造命令更新，验证命令被过滤、日志包含 WARNING 且结果列表不包含这些命令；同时模拟 `getUpdates` 返回 500/超时等错误，确认不会抛出异常而是记录 WARNING/ERROR 日志。  
+- AC4：在加入上述测试后运行 `./scripts/run_tests.sh`，确保所有既有 `notifications/telegram.py` 与风控相关测试仍全部通过，仅在测试集新增文件的前提下扩展覆盖率。  
+    ]]></ideas>
+  </tests>
+</story-context>

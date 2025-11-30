@@ -1,0 +1,161 @@
+<story-context id='.bmad/bmm/workflows/4-implementation/story-context/template' v='1.0'>
+  <metadata>
+    <epicId>7.4</epicId>
+    <storyId>2</storyId>
+    <title>实现 kill 和 resume 命令</title>
+    <status>drafted</status>
+    <generatedAt>2025-12-01T00:45:00+08:00</generatedAt>
+    <generator>BMAD Story Context Workflow (manual agent execution)</generator>
+    <sourceStoryPath>docs/sprint-artifacts/7-4-2-实现-kill-和-resume-命令.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA><![CDATA[As a user]]></asA>
+    <iWant><![CDATA[I want to control Kill-Switch via Telegram commands]]></iWant>
+    <soThat><![CDATA[so that I can quickly pause or resume trading in response to risk events.]]></soThat>
+    <tasks><![CDATA[
+- [ ] Task 1 – 设计命令处理入口与路由  
+- [ ] Task 2 – 实现 /kill 命令  
+- [ ] Task 3 – 实现 /resume 与 /resume confirm 命令  
+- [ ] Task 4 – 集成到主循环与测试  
+    ]]></tasks>
+  </story>
+
+  <acceptanceCriteria><![CDATA[
+1. AC1 – /kill 命令激活 Kill-Switch: 在正确配置 Telegram 后收到 /kill 命令时, 通过 risk_control 模块激活 Kill-Switch, 阻止后续 entry 决策, 并发送确认消息。  
+2. AC2 – /resume 和 /resume confirm 的二次确认机制: /resume 本身仅提示需要确认, /resume confirm 才实际尝试解除 Kill-Switch, 且与每日亏损限制逻辑保持一致。  
+3. AC3 – 日志与审计: 对每次 /kill 或 /resume 相关命令记录结构化日志和审计事件, 包含命令来源、前后状态与原因。  
+4. AC4 – 单元测试与回归: 新增或扩展 tests/test_notifications_telegram_commands.py 等测试覆盖上述行为, 并通过 ./scripts/run_tests.sh。  
+  ]]></acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+      <doc>
+        <path>docs/prd-risk-control-enhancement.md</path>
+        <title>风控系统增强 - 产品需求文档</title>
+        <section>Kill-Switch 功能 / Telegram 命令集成</section>
+        <snippet>定义了 Kill-Switch 的触发与恢复行为以及 Telegram 命令集成的整体需求, 包括 /kill 和 /resume 命令的语义、状态变更与通知要求。</snippet>
+      </doc>
+      <doc>
+        <path>docs/epic-risk-control-enhancement.md</path>
+        <title>风控系统增强 - Epic 与 Story 分解</title>
+        <section>Epic 7.4 / Story 7.4.2</section>
+        <snippet>在 Epic 7.4 下将 Story 7.4.2 定义为实现 /kill 和 /resume 命令的 Story, 给出示例 handle_command 实现, 需要二次确认机制与每日亏损限制协同。</snippet>
+      </doc>
+      <doc>
+        <path>docs/epics.md</path>
+        <title>LLM-trader-test - Epic Breakdown</title>
+        <section>Epic 7.4: Telegram 命令集成</section>
+        <snippet>说明 Epic 7.4 负责为 Kill-Switch 与每日亏损限制提供 Telegram 命令控制入口, 本 Story 聚焦在 kill 和 resume 命令。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/7-4-1-实现-telegram-命令接收机制.md</path>
+        <title>Story 7.4.1: 实现 Telegram 命令接收机制</title>
+        <section>Dev Notes / Learnings from Previous Story</section>
+        <snippet>描述了 TelegramCommandHandler 与 process_telegram_commands 的职责边界和错误处理模式, 本 Story 需要在此基础上添加具体命令处理逻辑。</snippet>
+      </doc>
+    </docs>
+
+    <code>
+      <codeArtifact>
+        <path>notifications/telegram_commands.py</path>
+        <kind>notifications</kind>
+        <symbol>TelegramCommand, TelegramCommandHandler, process_telegram_commands</symbol>
+        <lines>1-352</lines>
+        <reason>命令接收与分发入口所在模块, 本 Story 将在此基础上实现 /kill 与 /resume 的处理。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>notifications/telegram.py</path>
+        <kind>notifications</kind>
+        <symbol>send_telegram_message, create_kill_switch_notify_callbacks</symbol>
+        <lines>37-100, 510-595</lines>
+        <reason>封装 Telegram 发送与 Kill-Switch 通知 helper, 可被命令处理逻辑复用。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>core/risk_control.py</path>
+        <kind>risk-control</kind>
+        <symbol>RiskControlState, activate_kill_switch, deactivate_kill_switch, check_risk_limits</symbol>
+        <lines>17-616</lines>
+        <reason>定义 Kill-Switch 状态与操作的核心 API, 命令处理逻辑必须通过这些函数修改状态。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>bot.py</path>
+        <kind>main-loop</kind>
+        <symbol>_run_iteration, poll_telegram_commands</symbol>
+        <lines>684-772</lines>
+        <reason>主循环在每轮开始时调用 poll_telegram_commands, 本 Story 需要确保命令处理入口在该阶段被调用。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>tests/test_notifications_telegram_commands.py</path>
+        <kind>tests</kind>
+        <symbol>TestCommandParsing, TestProcessTelegramCommands, TestFullPollingFlow</symbol>
+        <lines>1-660</lines>
+        <reason>覆盖命令解析、chat 过滤与分发入口的行为, 将在此基础上扩展 /kill 与 /resume 相关测试。</reason>
+      </codeArtifact>
+    </code>
+
+    <dependencies>
+      <dependency ecosystem='python' name='requests' version='2.31.0' />
+      <dependency ecosystem='python' name='python-dotenv' version='1.0.0' />
+      <dependency ecosystem='python' name='pandas' version='2.2.3' />
+      <dependency ecosystem='python' name='numpy' version='2.1.3' />
+    </dependencies>
+  </artifacts>
+
+  <constraints><![CDATA[
+- 命令接收与解析逻辑集中在 notifications/telegram_commands.py 中实现, 命令业务处理通过中立入口与主循环解耦。  
+- Kill-Switch 状态修改必须通过 core/risk_control.py 暴露的 API 完成, 不直接修改 RiskControlState 字段。  
+- /resume 命令必须具备二次确认机制, 未带 confirm 参数时不得解除 Kill-Switch。  
+- 当 Kill-Switch 由每日亏损限制触发时, /resume confirm 是否允许强制恢复需要与每日亏损 Story 的约定保持一致, 避免绕过 daily_loss_triggered 保护。  
+- 所有命令导致的状态变更需要记录结构化日志和审计事件, 便于后续排查与回放。  
+  ]]></constraints>
+
+  <interfaces>
+    <interface>
+      <name>TelegramCommand</name>
+      <kind>dataclass</kind>
+      <signature>TelegramCommand(command: str, args: List[str], chat_id: str, message_id: int, raw_text: str, raw_update: Dict[str, Any])</signature>
+      <path>notifications/telegram_commands.py</path>
+    </interface>
+    <interface>
+      <name>TelegramCommandHandler</name>
+      <kind>class</kind>
+      <signature>TelegramCommandHandler(bot_token: str, allowed_chat_id: str, last_update_id: int = 0)</signature>
+      <path>notifications/telegram_commands.py</path>
+    </interface>
+    <interface>
+      <name>process_telegram_commands</name>
+      <kind>function</kind>
+      <signature>process_telegram_commands(commands: List[TelegramCommand], command_handlers: Optional[Dict[str, Callable[[TelegramCommand], None]]] = None) -> None</signature>
+      <path>notifications/telegram_commands.py</path>
+    </interface>
+    <interface>
+      <name>activate_kill_switch</name>
+      <kind>function</kind>
+      <signature>activate_kill_switch(state: RiskControlState, reason: str, positions_count: int = 0, notify_fn: Optional[Callable[[str, str, int], None]] = None) -> RiskControlState</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+    <interface>
+      <name>deactivate_kill_switch</name>
+      <kind>function</kind>
+      <signature>deactivate_kill_switch(state: RiskControlState, reason: str, notify_fn: Optional[Callable[[str, str], None]] = None, force: bool = False) -> RiskControlState</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+  </interfaces>
+
+  <tests>
+    <standards><![CDATA[
+- 使用 pytest 作为测试框架, Telegram 相关测试应通过 mock requests 或 mock 命令处理函数避免真实外部调用, 并验证日志与错误处理行为符合现有模式。  
+- 新增的 /kill 与 /resume 命令测试需要纳入统一测试入口 ./scripts/run_tests.sh。  
+    ]]></standards>
+    <locations><![CDATA[
+- tests/test_notifications_telegram_commands.py  
+- tests/test_risk_control.py  
+    ]]></locations>
+    <ideas><![CDATA[
+- 为 /kill 与 /resume confirm 构造 TelegramCommand 样本, 验证命令处理入口是否正确调用 risk_control API 并记录日志。  
+- 构造每日亏损已触发的 RiskControlState, 验证 /resume confirm 在未允许强制恢复时不会解除 Kill-Switch。  
+- 验证在命令处理出现异常时, 日志包含错误信息且 _run_iteration 不会被中断。  
+    ]]></ideas>
+  </tests>
+</story-context>

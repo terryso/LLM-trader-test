@@ -97,6 +97,7 @@ from exchange.market_data import BinanceMarketDataClient, BackpackMarketDataClie
 
 hyperliquid_trader = get_hyperliquid_trader()
 _market_data_client = None
+_telegram_command_handler: Optional[TelegramCommandHandler] = None
 
 # ───────────────────────── STATE I/O ─────────────────────────
 from core.persistence import (
@@ -111,6 +112,12 @@ from notifications.logging import (
 from notifications.telegram import (
     send_telegram_message as _send_telegram_message,
     create_daily_loss_limit_notify_callback,
+)
+from notifications.telegram_commands import (
+    TelegramCommandHandler,
+    create_command_handler,
+    process_telegram_commands,
+    create_kill_resume_handlers,
 )
 from core.trading_loop import log_risk_control_event
 
@@ -211,6 +218,69 @@ def get_market_data_client():
     elif MARKET_DATA_BACKEND == "backpack":
         _market_data_client = BackpackMarketDataClient(BACKPACK_API_BASE_URL)
     return _market_data_client
+
+
+def get_telegram_command_handler() -> Optional[TelegramCommandHandler]:
+    """Get or initialize Telegram command handler.
+    
+    Returns:
+        TelegramCommandHandler instance if Telegram is configured, None otherwise.
+        The handler is created once and reused to preserve last_update_id state.
+    """
+    global _telegram_command_handler
+    if _telegram_command_handler is not None:
+        return _telegram_command_handler
+    
+    _telegram_command_handler = create_command_handler(
+        bot_token=TELEGRAM_BOT_TOKEN,
+        chat_id=TELEGRAM_CHAT_ID,
+    )
+    return _telegram_command_handler
+
+
+def poll_telegram_commands() -> None:
+    """Poll and process Telegram commands.
+    
+    This function is called at the beginning of each iteration to check for
+    new Telegram commands. Commands are parsed and passed to process_telegram_commands
+    for handling.
+    
+    Story 7.4.1 implements the polling infrastructure.
+    Story 7.4.2 adds /kill and /resume command handlers.
+    Stories 7.4.3-7.4.5 will add /status, /reset_daily, /help handlers.
+    
+    Error handling:
+        - If Telegram is not configured, silently returns
+        - Network/API errors are logged but do not interrupt the main loop
+        - Command handler errors are logged but do not interrupt the main loop
+    """
+    handler = get_telegram_command_handler()
+    if handler is None:
+        return
+    
+    try:
+        commands = handler.poll_commands()
+        if commands:
+            logging.info(
+                "Telegram commands received: %d command(s)",
+                len(commands),
+            )
+            # Create command handlers for /kill and /resume (Story 7.4.2)
+            command_handlers = create_kill_resume_handlers(
+                state=_core_state.risk_control_state,
+                positions_count_fn=lambda: len(positions),
+                record_event_fn=log_risk_control_event,
+                bot_token=TELEGRAM_BOT_TOKEN,
+                chat_id=TELEGRAM_CHAT_ID,
+            )
+            # Process commands with handlers
+            process_telegram_commands(commands, command_handlers=command_handlers)
+    except Exception as exc:
+        # Defensive: ensure command polling never breaks the main loop
+        logging.error(
+            "Unexpected error in Telegram command polling: %s",
+            exc,
+        )
 
 
 def fetch_market_data(symbol: str) -> Optional[Dict[str, Any]]:
@@ -639,6 +709,10 @@ def _run_iteration() -> None:
     print(f"\n{Fore.CYAN}{'='*20}")
     print(f"{Fore.CYAN}Iteration {iteration} - {get_current_time().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{Fore.CYAN}{'='*20}\n")
+    
+    # Poll Telegram commands (before risk control check)
+    # Story 7.4.1: Infrastructure only - actual handlers added in 7.4.2-7.4.5
+    poll_telegram_commands()
     
     # Risk control check (before market data and LLM calls)
     # Returns False if Kill-Switch is active (entry trades should be blocked)

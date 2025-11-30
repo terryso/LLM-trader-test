@@ -77,8 +77,8 @@ development_status:
 
   # === Epic 7.4: Telegram 命令集成 ===
   epic-7-4: backlog
-  7-4-1-实现-telegram-命令接收机制: backlog
-  7-4-2-实现-kill-和-resume-命令: backlog
+  7-4-1-实现-telegram-命令接收机制: done
+  7-4-2-实现-kill-和-resume-命令: done
   7-4-3-实现-status-命令: backlog
   7-4-4-实现-reset-daily-命令: backlog
   7-4-5-实现-help-命令和安全校验: backlog
