@@ -1,261 +1,230 @@
-# DeepSeek Paper Trading Bot
+# Backpack 刷量交易 Bot（基于 DeepSeek）
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/F1F11HO935)
+本项目是一个面向合约量化刷量/做市场景的交易 Bot，支持：
 
-<img width="220" height="286" alt="b7c0054cf81fe6735d60ab5de48243e5" src="https://github.com/user-attachments/assets/4628befa-96b4-42dd-af42-4724a9a28336" />
+- **Backpack USDC 永续合约刷量 / 做市**（重点）
+- 默认使用 DeepSeek，通过任意 OpenAI Chat Completions 兼容接口（由 `LLM_API_BASE_URL` / `LLM_API_KEY` / `LLM_API_TYPE` 配置）进行交易决策
+- 支持纸面回测/回放、风险控制、Telegram 通知等
+
+运行方式以 Docker 为主，核心逻辑和配置都已经封装好，你只需要：
+
+1. 注册并开通 Backpack 交易所账号
+2. 申请 API Key，并填入 `.env`
+3. 配置为 `backpack_futures` 模式
+4. 启动 Bot，即可在 Backpack 上进行刷量/交易
+
+---
 
 ## 🏢 代部署服务
 
-**不想自己部署？我们提供代部署服务！**
+**不想自己折腾部署、服务器、环境？可以找我代部署。**
 
-### 服务器部署的优势
-- 🖥️ **无需本地电脑运行** - 服务器24小时自动运行，无需保持自己的电脑开着
-- 🌍 **无需翻墙** - 推荐的服务器在国外环境，访问Binance API更稳定
-- 🔋 **省心省力** - 专业配置，自动运行，无需担心环境配置和网络问题
+- 🖥️ **无需本地电脑 7x24 小时开机**：部署在海外服务器，全天候运行
+- 🌍 **网络稳定**：服务器位于海外，访问交易所 API 更稳定
+- 🔧 **省心省力**：系统安装、依赖配置、Docker、定时任务、监控等一站式搞定
 
-### 服务费用
-- 💰 **服务器成本低** - 一个服务器月租仅需40元人民币
-- 🛠️ **部署服务费面议** - 根据具体需求进行配置和部署
+**费用说明（参考）：**
 
-### 联系方式
-📱 **有意者请加微信**: `gptkit`
+- 服务器成本：约 40 元/月（按实际服务商为准）
+- 代部署服务费：可面议（视你的需求复杂度）
+- 大模型 API：我用 GLM 的编程套餐，**第一个月只需要 100 元，API 调用次数基本用不完**。购买地址：<https://www.bigmodel.cn/claude-code?ic=TVUZHTWCW9>
 
-> 备注：代部署服务包含完整的环境配置、系统部署、运行测试和使用指导。
+**联系微信：**`gptkit`
 
-This repository contains a paper-trading bot (with optional Hyperliquid mainnet execution) that runs against the Binance REST API while leveraging DeepSeek for trade decision-making. Inspired by the https://nof1.ai/ challenge. A live deployment is available at [llm-trader.streamlit.app](https://llm-trader.streamlit.app/), where you can access the dashboard and review the complete bot conversation log.
-
-The app persists its runtime data (portfolio state, AI messages, and trade history) inside a dedicated `data/` directory so it can be mounted as a volume when running in Docker.
+> 代部署包含：环境配置、代码部署、配置指导、简单使用说明。如有定制需求（策略改造、风控规则、指标调整等），可另行沟通。
 
 ---
 
-## 🚀 Development Roadmap
+## 1. Backpack 注册与准备工作
 
-**Support next-gen features through community sponsorship!** Each tier unlocks focused capabilities. Tiers must be funded in order.
+### 1.1 使用推荐链接注册 Backpack
 
-| Tier | Feature | Progress |
-|------|---------|----------|
-| 🔒 **Tier 1** | Hyperliquid Live Execution | **$0 / $1,000** |
-| 🔒 **Tier 2** | Emergency Controls & Monitoring | **$0 / $1,000** |
-| 🔒 **Tier 3** | Smart Position Sizing | **$0 / $1,000** |
-| 🔒 **Tier 4** | Portfolio Risk Limits | **$0 / $1,000** |
-| 🔒 **Tier 5** | Multi-LLM Support | **$0 / $1,000** |
-| 🔒 **Tier 6** | Strategy Voting System | **$0 / $1,000** |
-| 🔒 **Tier 7** | Basic Backtesting | **$0 / $1,000** |
-| 🔒 **Tier 8** | Advanced Backtesting | **$0 / $1,000** |
-| 🔒 **Tier 9** | Performance Analytics | **$0 / $1,000** |
-| 🔒 **Tier 10** | Smart Alerting & Reports | **$0 / $1,000** |
+推荐使用下面的注册链接创建 Backpack 账号（网页打开即可）：
 
-💰 **Sponsor:** Send $1,000 to unlock the next tier → [Details below](#development-roadmap--sponsorship)
+> https://backpack.exchange/join/86324687-8d6e-45f4-a477-7499a8aedd1a
+
+注册完成后：
+
+- 绑定邮箱/手机号，完成基础安全设置
+- 按平台要求完成 KYC（如需）
+- 开通 USDC 永续合约交易权限
+
+### 1.2 申请 Backpack API Key
+
+在完成账号注册与安全设置后，前往 Backpack 的 API 管理页面：
+
+> https://backpack.exchange/portfolio/settings/api-keys
+
+步骤示例：
+
+1. 登录 Backpack 官网
+2. 打开上面的 API Keys 页面
+3. 创建新的 API Key
+4. 权限建议：
+   - 开启 **读取账户 / 读取持仓**
+   - 开启 **交易权限（合约下单）**
+   - 不建议开启提现权限
+5. 创建完成后，你会获得一对 Base64 编码的 ED25519 密钥：
+   - 公钥（Public Key）
+   - 私钥种子（Secret Seed）
+
+请妥善保管，不要泄露，也不要提交到 Git 仓库。
 
 ---
 
-## Dashboard Preview
+## 2. 环境准备与依赖
 
-The Streamlit dashboard provides real-time monitoring of the trading bot's performance, displaying portfolio metrics, equity curves benchmarked against BTC buy-and-hold, trade history, and AI decision logs.
+### 2.1 基础环境
 
-### DeepSeek Trading Bot Dashboard
-![DeepSeek Trading Bot Dashboard](examples/dashboard.png)
+- 推荐：Ubuntu 等 Linux 云服务器（也可本地 macOS）
+- 已安装：
+  - Docker 24+（或兼容版本）
+  - Git
 
-### DeepSeek Trading Bot Console
-![DeepSeek Trading Bot Console](examples/screenshot.png)
+拉取代码：
 
-## How It Works (Multi-Timeframe System)
-
-### Timeframe Analysis
-The bot uses a hierarchical 3-timeframe approach:
-
-- **15-Minute (Execution)**: Precise entry timing, RSI14, MACD crossovers
-- **1-Hour (Structure)**: Swing highs/lows, pullback identification, support/resistance
-- **4-Hour (Trend)**: Overall bias (bullish/bearish/neutral), major EMAs, ATR for stops
-
-### Trading Loop (Every 15 minutes)
-1. **Fetch Market Data**: Retrieves 200× 15m candles, 100× 1h candles, 100× 4h candles
-2. **Calculate Indicators**: EMA 20/50/200, RSI14, MACD, ATR, volume analysis
-3. **Build Rich Prompt**: Formats multi-timeframe data with clear hierarchy
-4. **AI Decision**: DeepSeek analyzes using system prompt rules
-5. **Execute Trades**: Validates AI decisions against risk management rules
-6. **Monitor Positions**: Checks for stop loss, take profit, or structural breaks
-
-### Entry Types
-- **Type A (With-Trend)**: 4H trend + 1H pullback + 15M reversal signal (2% risk)
-- **Type B (Counter-Trend)**: 4H extreme RSI + major level + strong reversal (1% risk)
-- **Type C (Range)**: Neutral 4H market, trade swing_high/swing_low (1% risk)
-
-### Exit Rules
-Positions close ONLY when:
-1. Stop loss or take profit is hit
-2. 1H structure breaks (closes beyond swing_high/swing_low)
-3. 4H major trend reverses (closes beyond EMA50 + MACD flip)
-4. Within 20% of stop loss distance = **DO NOT manually close** (let SL work)
-
-### What Changed from 3m System
-- ❌ Removed: 3-minute noise, RSI7, subjective "weak momentum" exits
-- ✅ Added: 1-hour structure layer, mechanical exit rules, 20% proximity rule
-- ✅ Improved: Clearer timeframe hierarchy, confluence requirements, risk scaling by trade type
-
-## System Prompt & Decision Contract
-DeepSeek is primed with a risk-first system prompt that stresses:
-- Never risking more than 1–2% of capital on a trade
-- Mandatory stop-loss orders and pre-defined exit plans
-- Favouring trend-following setups, patience, and written trade plans
-- Thinking in probabilities while keeping position sizing under control
-
-Each iteration DeepSeek receives the live portfolio snapshot and must answer **only** with JSON resembling:
-
-```json
-{
-  "ETH": {
-    "signal": "entry",
-    "side": "long",
-    "quantity": 0.5,
-    "profit_target": 3150.0,
-    "stop_loss": 2880.0,
-    "leverage": 5,
-    "confidence": 0.72,
-    "risk_usd": 150.0,
-    "invalidation_condition": "If price closes below 4h EMA20",
-    "justification": "Momentum + RSI reset on support"
-  }
-}
+```bash
+git clone https://github.com/terryso/LLM-trader-test.git
+cd LLM-trader-test
 ```
 
-If DeepSeek responds with `hold`, the bot still records unrealised PnL, accumulated fees, and the rationale in `ai_decisions.csv`.
+### 2.2 复制并编辑环境变量文件
 
-Need to iterate on the playbook? Set `TRADEBOT_SYSTEM_PROMPT` directly in `.env`, or point `TRADEBOT_SYSTEM_PROMPT_FILE` at a text file to swap the default rules. The backtester honours `BACKTEST_SYSTEM_PROMPT` and `BACKTEST_SYSTEM_PROMPT_FILE` so you can trial alternative prompts without touching live settings.
+项目提供了示例配置：`.env.example`，你可以复制一份：
 
-## LLM Provider Configuration (OpenAI-compatible)
+```bash
+cp .env.example .env
+```
 
-By default the bot talks to DeepSeek via OpenRouter, but you can point it at **any OpenAI Chat Completions–compatible endpoint** by setting:
+然后使用你熟悉的编辑器修改 `.env`，重点是 **Backpack 相关配置**。
 
-- `LLM_API_BASE_URL` – e.g. `https://openrouter.ai/api/v1/chat/completions`, `https://api.openai.com/v1/chat/completions`, or your own gateway.
-- `LLM_API_KEY` – API key or token for that provider.
-- `LLM_API_TYPE` – optional hint (`openrouter`, `openai`, `azure`, `custom`) that influences HTTP headers and logging.
+---
 
-If these variables are not set, the bot falls back to `OPENROUTER_API_KEY` and the default OpenRouter endpoint. See `.env.example` for complete examples, including backtest-only overrides (`BACKTEST_LLM_API_BASE_URL`, `BACKTEST_LLM_API_KEY`, `BACKTEST_LLM_API_TYPE`).
+## 3. Backpack 相关配置说明
 
-## Telegram Notifications
-Configure `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env` to receive a message after every iteration. The notification mirrors the console output (positions opened/closed, portfolio summary, and any warnings) so you can follow progress without tailing logs.
+在 `.env` 文件中，找到并配置以下几个关键变量：
 
-Additionally you can set a dedicated signals group for trade-entry/exit signals using `TELEGRAM_SIGNALS_CHAT_ID`. When this is set the bot will send rich, Markdown-formatted ENTRY and CLOSE signals (only) to that chat — these messages include:
-- **ENTRY signals**: Asset, direction, leverage, entry price, position size, margin, risk, profit targets, stop-loss levels, R/R ratio, liquidity type, confidence percentage, entry fees, and AI reasoning
-- **CLOSE signals**: Asset, direction, size, entry/exit prices, price change %, gross/net P&L, fees paid, ROI %, updated balance, and exit reasoning
+```env
+TRADING_BACKEND=backpack_futures
 
-The signals use emojis (🟢 for LONG, 🔴 for SHORT, ✅ for profit, ❌ for loss) and structured Markdown formatting for easy reading on mobile devices. If `TELEGRAM_SIGNALS_CHAT_ID` is not set, ENTRY/CLOSE signals will not be sent to a separate group (the general `TELEGRAM_CHAT_ID` remains used for iteration summaries and errors).
+MARKET_DATA_BACKEND=backpack
 
-Leave the variables empty to run without Telegram.
+BACKPACK_API_PUBLIC_KEY=你的_Backpack_API_Public_Key
+BACKPACK_API_SECRET_SEED=你的_Backpack_API_Secret_Seed
 
-## Performance Metrics
+# 可选：如不填则使用默认官方地址与 5000ms 窗口
+#BACKPACK_API_BASE_URL=https://api.backpack.exchange
+#BACKPACK_API_WINDOW_MS=5000
 
-The console summary and dashboard track both realized and unrealized performance:
+# 统一的实盘总开关（建议手动确认后再打开）
+LIVE_TRADING_ENABLED=true
+```
 
-- **Sharpe ratio** (dashboard) is computed from closed trades using balance snapshots after each exit.
-- **Sortino ratio** (bot + dashboard) comes from the equity curve and penalises downside volatility only, making it more informative when the sample size is small.
+**说明：**
 
-By default the Sortino ratio assumes a 0% risk-free rate. Override it by defining `SORTINO_RISK_FREE_RATE` (annualized decimal, e.g. `0.03` for 3%) or, as a fallback, `RISK_FREE_RATE` in your `.env`.
+- `TRADING_BACKEND=backpack_futures`：选择 Backpack 作为交易后端
+- `MARKET_DATA_BACKEND=backpack`：选择 Backpack 公共行情 API 作为价格/K 线来源，用于技术指标计算和 Dashboard 展示；在只关心 Backpack 场景下，可以让行情与交易保持一致、完全自洽
+- `BACKPACK_API_PUBLIC_KEY` / `BACKPACK_API_SECRET_SEED`：
+  - 对应你在 Backpack 后台申请到的 API 公钥/私钥种子
+  - 必须是 Base64 编码的 ED25519 密钥（按官方文档生成）
+- `LIVE_TRADING_ENABLED=true`：
+  - 当且仅当你确认要在 Backpack 上**真实下单/刷量**时再开启
+  - 如果不想立刻上实盘测试，可以先不设置或设为 `false`，只跑纸面回测逻辑
 
-## Prerequisites
+除了 Backpack 之外，`.env` 里还需要：
 
-- Docker 24+ (any engine capable of building Linux/AMD64 images)
-- A `.env` file with the required credentials:
-  - `BN_API_KEY` / `BN_SECRET` (or `BINANCE_API_KEY` / `BINANCE_API_SECRET`) for Binance market data and Binance USDT-margined futures.
-  - LLM provider configuration:
-    - `OPENROUTER_API_KEY` for the default OpenRouter + DeepSeek setup; or
-    - `LLM_API_BASE_URL` + `LLM_API_KEY` (+ optional `LLM_API_TYPE`) for any OpenAI-compatible LLM provider.
-  - Optional: `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` for push notifications.
-  - Optional: Hyperliquid live-trading variables (see below).
-  - Optional: Backpack futures live-trading variables (`BACKPACK_API_PUBLIC_KEY`, `BACKPACK_API_SECRET_SEED`).
+- LLM 相关（推荐直接使用 GLM 的 OpenAI Chat Completions 兼容接口）：
+  - `LLM_API_BASE_URL`：你的 LLM 网关地址，例如 `https://open.bigmodel.cn/api/coding/paas/v4/chat/completions`
+  - `LLM_API_KEY`：在 bigmodel.cn 后台创建的 GLM API Key
+  - `LLM_API_TYPE`：接口类型标记，GLM 推荐设置为 `custom`
 
-## Hyperliquid Live Trading (Optional)
+  **示例：使用 GLM 编程套餐（推荐）**
 
-The bot runs in paper-trading mode by default and never touches live capital. To forward fills to Hyperliquid mainnet:
+  ```env
+  # LLM 模型配置
+  TRADEBOT_LLM_MODEL=glm-4.6
+  TRADEBOT_LLM_TEMPERATURE=0.3
+  TRADEBOT_LLM_MAX_TOKENS=4000
+  #TRADEBOT_LLM_THINKING={"budget_tokens":512}
 
-- Install the extra dependency (`pip install hyperliquid-python-sdk`) or rely on the updated `requirements.txt`.
-- Set the following variables in `.env`:
-  - `HYPERLIQUID_LIVE_TRADING=true`
-  - `HYPERLIQUID_WALLET_ADDRESS=0xYourWallet`
-  - `HYPERLIQUID_PRIVATE_KEY=your_private_key_or_vault_key`
-  - `HYPERLIQUID_CAPITAL=500` (used for position sizing / risk limits)
-- Optionally adjust `PAPER_START_CAPITAL` to keep a separate paper account value when live trading is disabled.
-- To perform a tiny live round-trip sanity check, run `python scripts/manual_hyperliquid_smoke.py --coin BTC --notional 2 --leverage 1`. Passing `BTC-USDC` works as well; the script automatically maps both forms to the correct Hyperliquid market, opens a ~2 USD taker position, attaches TP/SL, waits briefly, and closes the trade.
+  # GLM 接口配置
+  LLM_API_BASE_URL=https://open.bigmodel.cn/api/coding/paas/v4/chat/completions
+  LLM_API_KEY=你的_GLM_API_Key
+  LLM_API_TYPE=custom
+  ```
+- 资金风控相关（可选）：
+  - `PAPER_START_CAPITAL` / `LIVE_START_CAPITAL`
+  - 风险控制开关与每日亏损限制（`RISK_CONTROL_ENABLED`、`DAILY_LOSS_LIMIT_PCT` 等）
 
-When live mode is active the bot submits IOC (market-like) entry/exit orders and attaches reduce-only stop-loss / take-profit triggers on Hyperliquid mainnet using isolated leverage. If initialization fails (missing SDK, credentials, etc.) the bot falls back to paper trading and logs a warning. Treat your private key with care—avoid checking it into version control and prefer a dedicated trading wallet.
+- 行情数据来源（可选）：
+  - `MARKET_DATA_BACKEND=binance`：从 Binance 现货接口拉取行情（默认）
+  - `MARKET_DATA_BACKEND=backpack`：从 Backpack 公共行情 API 获取价格和 K 线，在纯 Backpack 场景下更统一
 
-## Trading Backends & Live Mode Configuration
+> 你可以只先配置 Backpack + LLM，其他参数保持默认即可开始试跑。
 
-The bot separates **backend selection** from **live-mode switches**. All behavior is driven by environment variables:
+### Backpack 刷量效果示例（实测）
 
-- `TRADING_BACKEND` marks the **intended** execution backend:
-  - `paper` (default) → paper trading only.
-  - `hyperliquid` → you intend to use Hyperliquid as the live backend.
-  - `binance_futures` → you intend to use Binance USDT-margined futures as the live backend.
-  - `backpack_futures` → you intend to use Backpack USDC perpetual futures as the live backend.
-- `LIVE_TRADING_ENABLED` is an optional global master switch. When set to `true`, the bot enables live trading for the selected non-`paper` backend (Hyperliquid, Binance futures, or Backpack futures) provided the required credentials are configured.
-- `HYPERLIQUID_LIVE_TRADING` is the per-backend flag for sending live orders to Hyperliquid when `LIVE_TRADING_ENABLED` is **not** set. It is only honoured when `TRADING_BACKEND=hyperliquid`.
-- `BINANCE_FUTURES_LIVE` is the per-backend flag for sending live orders to Binance USDT-margined futures when `LIVE_TRADING_ENABLED` is **not** set, and only when `TRADING_BACKEND=binance_futures`.
+下图为在 Backpack USDC 永续合约上刷量约 2 天的实测效果：累计成交额约 **20 万 USDC**，整体亏损约 **25 USDC**（主要来自手续费和点差，实际盈亏仍取决于市场波动和具体策略）。
 
-Safe defaults:
+<p align="center">
+  <img src="https://i.v2ex.co/pt7yWp6ll.jpeg" alt="Backpack 刷量效果示例" width="520" />
+</p>
 
-- If `TRADING_BACKEND` is unset or invalid, the bot falls back to `paper`.
-- `LIVE_TRADING_ENABLED`, `HYPERLIQUID_LIVE_TRADING`, and `BINANCE_FUTURES_LIVE` all default to `false`, so a fresh checkout always runs in paper mode only.
+> 上图仅为历史示例，不代表任何未来收益承诺，请务必结合自身风险偏好谨慎使用。
 
-### Backend × Live-mode Matrix (when `LIVE_TRADING_ENABLED` is unset)
+---
 
-| TRADING_BACKEND   | HYPERLIQUID_LIVE_TRADING | BINANCE_FUTURES_LIVE | Effective behavior |
-|-------------------|--------------------------|-----------------------|--------------------|
-| `paper` (or unset)| `false`                  | `false`               | Pure paper trading; no live orders are sent. |
-| `hyperliquid`     | `true`                   | `false`               | Live orders go to Hyperliquid via `HyperliquidTradingClient`; `START_CAPITAL` uses `HYPERLIQUID_CAPITAL`. |
-| `binance_futures` | `false`                  | `false`               | Paper trading only; Binance risk caps are parsed but no live orders are sent. |
-| `binance_futures` | `false`                  | `true`                | Live orders go to Binance USDT-margined futures via `BinanceFuturesExchangeClient`; margin/risk limits enforced. |
+## 4. Backpack 刷量 Bot 启动流程
 
-> 推荐做法：一次只开启一个实盘 backend。最简单的方式是设置 `TRADING_BACKEND=hyperliquid|binance_futures|backpack_futures` 并将 `LIVE_TRADING_ENABLED=true`。如果你更喜欢沿用每个 backend 自己的开关，在 **未设置** `LIVE_TRADING_ENABLED` 时，可以使用 `TRADING_BACKEND=hyperliquid` + `HYPERLIQUID_LIVE_TRADING=true` 或 `TRADING_BACKEND=binance_futures` + `BINANCE_FUTURES_LIVE=true`。
+### 4.1 本地直接运行（不使用 Docker）
 
-#### Hyperliquid live configuration (summary)
+推荐在本地开发、调试策略或先小规模试跑时使用本方式。
 
-- Recommended for Hyperliquid mainnet:
-  - `TRADING_BACKEND=hyperliquid`
-  - `HYPERLIQUID_LIVE_TRADING=true`
-  - `HYPERLIQUID_WALLET_ADDRESS=0xYourWallet`
-  - `HYPERLIQUID_PRIVATE_KEY=your_private_key_or_vault_key`
-  - `HYPERLIQUID_CAPITAL` set to the live capital you are willing to risk.
-- See the **Hyperliquid Live Trading (Optional)** section above for behavior details and the smoke-test command.
+1. （可选但推荐）创建虚拟环境并安装依赖：
 
-#### Binance Futures live configuration (summary)
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate  # Windows 使用 .venv\\Scripts\\activate
+   pip install -r requirements.txt
+   ```
 
-- Recommended for Binance USDT-margined futures:
-  - `TRADING_BACKEND=binance_futures`
-  - `BINANCE_FUTURES_LIVE=true`
-  - `BINANCE_API_KEY` / `BINANCE_API_SECRET` (or `BN_API_KEY` / `BN_SECRET`) configured.
-  - `BINANCE_FUTURES_MAX_RISK_USD` set to a per-trade risk cap in USD.
-  - `BINANCE_FUTURES_MAX_LEVERAGE` set to a sane leverage ceiling.
-  - Optional: `BINANCE_FUTURES_MAX_MARGIN_USD` to cap margin per position (0.0 = no extra cap).
-- A small live smoke-test is available in `scripts/manual_binance_futures_smoke.py`.
+2. 确保项目根目录下已经配置好 `.env` 文件（包括 Backpack、LLM、风控等变量）。
 
-#### Backpack Futures live configuration (summary)
+3. 启动 Backpack 刷量 Bot：
 
-- Recommended for Backpack USDC perpetual futures:
-  - `TRADING_BACKEND=backpack_futures`
-  - `LIVE_TRADING_ENABLED=true`
-  - `BACKPACK_API_PUBLIC_KEY` / `BACKPACK_API_SECRET_SEED` configured (base64-encoded ED25519 keys; see the official Backpack Exchange API documentation).
-  - Optional overrides: `BACKPACK_API_BASE_URL`, `BACKPACK_API_WINDOW_MS`.
-- A small live smoke-test is available in `scripts/manual_backpack_futures_smoke.py`.
+   ```bash
+   python3 bot.py
+   ```
 
-## Build the Image
+4. 启动监控 Dashboard（可选，与本地 `./data` 目录共用数据）：
+
+   ```bash
+   streamlit run dashboard.py
+   ```
+
+说明：默认情况下，`bot.py` 和 `dashboard.py` 都会读取项目根目录下的 `.env`，并将运行数据写入 `./data`（可通过 `TRADEBOT_DATA_DIR` 环境变量修改）。
+
+---
+
+### 4.2 构建 Docker 镜像
+
+在项目根目录执行：
 
 ```bash
 docker build -t tradebot .
 ```
 
-## Prepare Local Data Storage
-
-Create a directory on the host that will receive the bot's CSV/JSON artifacts:
+### 4.3 准备数据目录
 
 ```bash
 mkdir -p ./data
 ```
 
-The container stores everything under `/app/data`. Mounting your host folder to that path keeps trade history and AI logs between runs.
+Bot 运行时会把交易记录、AI 决策、持仓状态等信息写入 `./data` 目录，方便后续分析与对账。
 
-## Run the Bot in Docker
+### 4.4 启动 Backpack 刷量 Bot（Docker）
+
+确认 `.env` 已正确设置（尤其是 Backpack API 与 LLM），然后：
 
 ```bash
 docker run --rm -it \
@@ -264,13 +233,16 @@ docker run --rm -it \
   tradebot
 ```
 
-- `--env-file .env` injects API keys into the container.
-- The volume mount keeps `portfolio_state.csv`, `portfolio_state.json`, `ai_messages.csv`, `ai_decisions.csv`, and `trade_history.csv` outside the container so you can inspect them locally.
-- By default the app writes to `/app/data`. To override, set `TRADEBOT_DATA_DIR` and update the volume mount accordingly.
+此时：
 
-## Optional: Streamlit Dashboard
+- 如果 `TRADING_BACKEND=backpack_futures` 且 `LIVE_TRADING_ENABLED=true`：
+  - Bot 会根据 DeepSeek 的决策，在 Backpack USDC 永续合约上真实下单/刷量
+- 如果未开启实盘：
+  - 仍然会生成完整的交易决策与日志，但不会向交易所发送真实订单
 
-To launch the monitoring dashboard instead of the trading bot, run:
+### 4.5 使用 Docker 启动监控 Dashboard
+
+项目自带一个 Streamlit Dashboard，用于查看 Bot 的表现、收益曲线等：
 
 ```bash
 docker run --rm -it \
@@ -281,215 +253,113 @@ docker run --rm -it \
   streamlit run dashboard.py
 ```
 
-Then open <http://localhost:8501> to access the UI.
+浏览器访问：<http://localhost:8501>
 
-The top-level metrics include Sharpe and Sortino ratios alongside balance, equity, and PnL so you can quickly assess both realised returns and downside-adjusted performance.
+你可以看到：
+
+- 资金曲线、回撤、Sharpe/Sortino 等指标
+- 具体每笔交易和 AI 决策内容
 
 ---
 
-## Reconcile Portfolio State After Editing Trades
+## 5. Backpack 实盘联通自检（小额测试）
 
-If you manually edit `data/trade_history.csv` (for example, deleting erroneous trades) run the reconciliation helper to rebuild `portfolio_state.json` from the remaining rows:
+在正式高频刷量前，建议先做一笔非常小金额的联通测试，确认：
+
+- API Key 权限正确
+- 延迟/撮合正常
+- 账户有足够 USDC 作为保证金
+
+项目提供了一个 Backpack 永续合约的手动 smoke 测试脚本：
 
 ```bash
-python3 scripts/recalculate_portfolio.py
+./scripts/run_backpack_futures_smoke.sh \
+  --coin BTC \
+  --size 0.001 \
+  --side long
 ```
 
-- The script replays the trade log from the configured starting capital (respects `PAPER_START_CAPITAL`, `HYPERLIQUID_CAPITAL`, and `HYPERLIQUID_LIVE_TRADING`).
-- Open positions are recreated with their margin, leverage, and risk metrics; the resulting balance and positions are written to `data/portfolio_state.json`.
-- Use `--dry-run` to inspect the reconstructed state without updating files, or `--start-capital 7500` to override the initial balance.
+该脚本会：
 
-This keeps the bot's persisted state consistent with the edited trade history before restarting the live loop.
+- 在 `BTC_USDC_PERP` 市场开一笔极小头寸
+- 等待几秒
+- 再通过 reduce-only 市价单平掉该头寸
+
+如果脚本运行失败，请重点检查：
+
+- `.env` 中 `BACKPACK_API_PUBLIC_KEY` / `BACKPACK_API_SECRET_SEED` 是否正确
+- 是否有网络问题/时间窗口配置不正确（`BACKPACK_API_WINDOW_MS`）
 
 ---
 
-## Historical Backtesting
+## 6. 风险控制与 Telegram 通知（可选）
 
-The repository ships with a replay harness (`backtest.py`) so you can evaluate prompts and LLM choices on cached Binance data without touching the live loop.
+### 6.1 风险控制
 
-### 1. Configure the Environment
+在 `.env` 末尾，你可以看到一整段中文风控说明，主要变量包括：
 
-Add any of the following keys to your `.env` when running a backtest (all are optional and fall back to the live defaults):
+- `RISK_CONTROL_ENABLED`：是否启用风控总开关
+- `KILL_SWITCH`：紧急停止新开仓（保留平仓/止损）
+- `DAILY_LOSS_LIMIT_ENABLED`：是否启用每日亏损限制
+- `DAILY_LOSS_LIMIT_PCT`：每日最大亏损占比（达到后自动拉闸）
 
-- `BACKTEST_DATA_DIR` – root folder for cached candles and run artifacts (default `data-backtest/`)
-- `BACKTEST_START` / `BACKTEST_END` – UTC timestamps (`2024-01-01T00:00:00Z` format) that define the evaluation window
-- `BACKTEST_INTERVAL` – primary bar size (`3m` by default); a 4h context stream is fetched automatically
-- `BACKTEST_LLM_MODEL`, `BACKTEST_TEMPERATURE`, `BACKTEST_MAX_TOKENS`, `BACKTEST_LLM_THINKING`, `BACKTEST_SYSTEM_PROMPT`, `BACKTEST_SYSTEM_PROMPT_FILE` – override the model, sampling parameters, and system prompt without touching your live settings
-- Optional LLM endpoint overrides used only during backtests: `BACKTEST_LLM_API_BASE_URL`, `BACKTEST_LLM_API_KEY`, `BACKTEST_LLM_API_TYPE`.
-- `BACKTEST_START_CAPITAL` – initial equity used for balance/equity calculations
-- `BACKTEST_DISABLE_TELEGRAM` – set to `true` to silence notifications during the simulation
+建议在实盘刷量前，按自己可承受风险合理调整这些参数。
 
-You can also keep distinct live overrides via `TRADEBOT_LLM_MODEL`, `TRADEBOT_LLM_TEMPERATURE`, `TRADEBOT_LLM_MAX_TOKENS`, `TRADEBOT_LLM_THINKING`, and `TRADEBOT_SYSTEM_PROMPT` / `TRADEBOT_SYSTEM_PROMPT_FILE` if you want different prompts or thinking budgets in production.
+### 6.2 Telegram 通知
 
-### 2. Run the Backtest
+如需用 Telegram 实时接收 Bot 的交易情况，可在 `.env` 配置：
 
-```bash
-python3 backtest.py
-```
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+- 可选：`TELEGRAM_SIGNALS_CHAT_ID`（只推送开仓/平仓信号）
 
-The runner automatically:
-
-1. Loads `.env`, forces paper-trading mode, and injects the backtest overrides into the bot.
-2. Downloads any missing Binance klines into `data-backtest/cache/` (subsequent runs reuse the cache).
-3. Iterates through each bar in the requested window, calling the LLM for fresh decisions at every step.
-4. Reuses the live execution engine so position management, fee modelling, and CSV logging behave identically.
-
-#### Option B: Run in Docker
-
-Launch containerised backtests (handy for running several windows in parallel) via the helper script:
-
-```bash
-./scripts/run_backtest_docker.sh 2024-01-01T00:00:00Z 2024-01-07T00:00:00Z prompts/system_prompt.txt
-```
-
-- Pass start/end timestamps in UTC; provide a prompt file or `-` to reuse the default rules.
-- The script ensures the Docker image exists, mounts `data-backtest` so results land in `data-backtest/run-<id>/`, and forwards all relevant env vars into the container.
-- Tweak behaviour with `DOCKER_IMAGE`, `DOCKER_ENV_FILE`, `BACKTEST_INTERVAL`, or `BACKTEST_RUN_ID` environment variables before invoking the script.
-- Because each run gets its own container name and run id you can kick off multiple tests concurrently without clashing directories.
-
-### 3. Inspect the Results
-
-Each run is written to a timestamped directory (e.g. `data-backtest/run-20240101-120000/`) that mirrors the live layout:
-
-- `portfolio_state.csv`, `trade_history.csv`, `ai_decisions.csv`, `ai_messages.csv` contain the full replay trace.
-- `backtest_results.json` summarises the run (final equity, return %, Sortino ratio, max drawdown, realised PnL, trade counts, LLM config, etc.). A fresh JSON file is generated for every run—nothing is overwritten.
-
-Because the backtester drives the same modules as production you can plug the CSVs directly into the Streamlit dashboard (point `TRADEBOT_DATA_DIR` at a run folder) or external analytics tools.
+配置完成后，每次迭代、开平仓、异常告警等信息都会推送到你的 Telegram。
 
 ---
 
-## Development Roadmap & Sponsorship
+## 7. 常见使用场景示例（Backpack 刷量）
 
-This project evolves through community sponsorship. Each **$1,000 tier** unlocks focused capabilities. Development begins once a tier is fully funded (estimated 1-2 weeks per tier). All code remains open-source.
+- **交易所活动刷量**：
+  - 需要在指定永续合约上达到一定成交量
+  - 使用本 Bot 持续小额下单+平仓，生成连续成交记录
 
-### Current Status
+- **做市/挂单深度**（需视策略微调）：
+  - 通过修改系统 Prompt 或策略逻辑，让 Bot 更偏向挂单成交
 
-**🔒 Tier 1 is next** - Hyperliquid Live Execution needs funding to begin development.
+- **策略研究/回测**：
+  - 先在纯纸面模式下调参
+  - 再切换到 Backpack 实盘进行小额验证
 
-### 🎯 Tier 1: Hyperliquid Live Execution
-**Goal: $1,000 | Funded: $0**
-
-Core live trading on Hyperliquid mainnet:
-- IOC order execution with retry logic
-- Basic position tracking
-
-### 🛡️ Tier 2: Emergency Controls & Monitoring
-**Goal: $1,000 | Funded: $0**
-
-Safety and transparency:
-- Kill-switch (Telegram command + env variable)
-- Slippage tracking and audit logging
-- Enhanced smoke test suite
-
-### 📊 Tier 3: Smart Position Sizing
-**Goal: $1,000 | Funded: $0**
-
-Dynamic risk-based sizing:
-- Volatility-adjusted position sizing (ATR)
-- Account equity percentage rules
-- Trailing stops implementation
-
-### 🔒 Tier 4: Portfolio Risk Limits
-**Goal: $1,000 | Funded: $0**
-
-Portfolio-level protection:
-- Max total exposure limits
-- Correlation analysis between assets
-- Daily loss limits with auto-pause
-- Risk heat maps in dashboard
-
-### 🤖 Tier 5: Multi-LLM Support
-**Goal: $1,000 | Funded: $0**
-
-Compare AI performance:
-- Add GPT-5 and Claude support
-- Side-by-side LLM comparison
-- Per-model performance tracking
-- Easy model switching
-
-### 🧠 Tier 6: Strategy Voting System
-**Goal: $1,000 | Funded: $0**
-
-Run multiple strategies:
-- Multiple prompt personalities (conservative/aggressive/counter-trend)
-- Weighted voting on decisions
-- Hot-swap strategies without restart
-- Individual strategy P&L tracking
-
-### 📈 Tier 7: Basic Backtesting
-**Goal: $1,000 | Funded: $0**
-
-Test on historical data:
-- Historical OHLCV data pipeline
-- Simple simulation engine
-- Basic performance metrics
-- CSV report generation
-
-### 🔬 Tier 8: Advanced Backtesting
-**Goal: $1,000 | Funded: $0**
-
-Professional validation:
-- Monte Carlo analysis
-- Walk-forward optimization
-- Realistic slippage/commissions
-- Parameter sensitivity testing
-
-### 📊 Tier 9: Performance Analytics
-**Goal: $1,000 | Funded: $0**
-
-Deep insights:
-- ML-based anomaly detection
-- Advanced metrics (VaR, CVaR, rolling Sharpe/Sortino)
-- Profit factor analysis by asset/timeframe
-- Market regime detection
-
-### 🚨 Tier 10: Smart Alerting & Reports
-**Goal: $1,000 | Funded: $0**
-
-Intelligence layer:
-- Context-aware alerting (pattern-based, not just thresholds)
-- Automated weekly performance reports
-- Multi-channel alerts (Email/Telegram/Discord)
-- Custom dashboard exports
-
-### 💰 How to Sponsor
-
-1. **Choose Tier 1** (must fund in order)
-2. **Send $1,000** to: `0x4B1bEd654BA86F64441037ad0A7D2ce54321B381` (Ethereum)
-3. **Create Issue** with transaction ID
-4. **Track Progress** - Development starts once funded
-
-**Sponsor Benefits:**
-- Early access to new features
-- Listed as project sponsor in README
-- Direct input on feature priorities
-- Weekly progress updates
-
-### 📧 Contact
-
-Questions about sponsorship? Reach out via:
-- **Email:** [kojott@gmail.com]
-- **Twitter:** [@kojott]
-- **Telegram:** [@kojottchorche]
+> 如果你有更复杂的刷量/做市需求（如双边对敲、多账号协同、细粒度手续费/返佣优化等），可以在微信沟通定制开发。
 
 ---
 
-## Disclaimer
+## 8. 免责声明
 
-This repository is provided strictly for experimental and educational purposes. You alone choose how to use it and you bear 100% of the financial risk. I do not offer trading advice, I make no promises of profitability, and I am not responsible for any losses, damages, or missed opportunities that arise from running this project in any environment.
+本仓库及相关代码仅用于技术研究和教育演示：
 
-Please keep the following in mind before you deploy anything derived from this code:
+- 不构成任何投资建议或交易建议
+- 不保证任何收益或回报
+- 使用本项目产生的任何直接或间接损失，均由使用者自行承担
 
-- There is no token, airdrop, or fundraising effort associated with this work; if someone claims otherwise, they are not connected to me.
-- The bot does not ship with a complete trading system. Every result depends on your own research, testing, risk controls, and execution discipline.
-- Market conditions change quickly. Past backtests, paper trades, or screenshots are not guarantees of future performance.
-- No LLM, agent, or automated component can remove the inherent risk from trading. Validate everything yourself before real capital is at stake.
+在你开始实盘刷量或交易之前，请务必：
 
-By using this repository you acknowledge that you are solely responsible for configuring, auditing, and running it, and that you accept all associated risks.
+- 充分理解永续合约、高杠杆交易的风险
+- 先在纸面/小额资金环境中长期验证
+- 仔细评估自己的风险承受能力
 
-## Development Notes
+---
 
-- The Docker image sets `PYTHONDONTWRITEBYTECODE=1` and `PYTHONUNBUFFERED=1` for cleaner logging.
-- When running locally without Docker, the bot still writes to the `data/` directory next to the source tree (or to `TRADEBOT_DATA_DIR` if set).
-- Existing files inside `data/` are never overwritten automatically; if headers or columns change, migrate the files manually.
-- The repository already includes sample CSV files in `data/` so you can explore the dashboard immediately. These files will be overwritten as the bot runs.
+## 9. 开发者说明（简要）
+
+- 使用 Docker 运行时，日志与数据统一写入 `/app/data`（映射到本地 `./data`）
+- 不会自动覆盖已有数据文件，如需迁移旧数据请手工处理
+- 项目包含完整的单元测试与回测脚本，适合二次开发和策略研究
+
+如果你只关心 Backpack 刷量，把注意力放在：
+
+- `.env` 中 Backpack 与风险控制相关变量
+- `scripts/manual_backpack_futures_smoke.py` 联通测试脚本
+- Docker 启动命令
+
+即可完成从 0 到 1 的搭建与上线。
