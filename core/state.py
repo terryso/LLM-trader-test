@@ -25,7 +25,7 @@ from core.persistence import (
     save_state_to_json as _save_state_to_json,
     load_state_from_json as _load_state_from_json,
 )
-from core.risk_control import RiskControlState
+from core.risk_control import RiskControlState, apply_kill_switch_env_override
 
 # ──────────────────────── GLOBAL STATE ─────────────────────
 balance: float = START_CAPITAL
@@ -131,10 +131,14 @@ def load_state() -> None:
             )
         risk_control_state = RiskControlState()
 
+    # Apply KILL_SWITCH environment variable override (AC1 priority logic)
+    risk_control_state, env_overridden = apply_kill_switch_env_override(risk_control_state)
+
     logging.info(
-        "Risk control state loaded: kill_switch_active=%s, daily_loss_pct=%.2f%%",
+        "Risk control state loaded: kill_switch_active=%s, daily_loss_pct=%.2f%%%s",
         risk_control_state.kill_switch_active,
         risk_control_state.daily_loss_pct,
+        " (env override applied)" if env_overridden else "",
     )
 
 

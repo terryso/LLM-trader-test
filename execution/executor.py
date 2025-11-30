@@ -24,6 +24,7 @@ from config.settings import (
     BACKPACK_API_BASE_URL,
     BACKPACK_API_WINDOW_MS,
     TELEGRAM_SIGNALS_CHAT_ID,
+    RISK_CONTROL_ENABLED,
 )
 from core.metrics import (
     calculate_pnl_for_price,
@@ -77,6 +78,7 @@ class TradeExecutor:
         trading_backend: str,
         binance_futures_live: bool,
         backpack_futures_live: bool,
+        is_kill_switch_active: Optional[Callable[[], bool]] = None,
     ):
         """Initialize the trade executor with dependencies.
         
@@ -99,6 +101,9 @@ class TradeExecutor:
             trading_backend: Trading backend name.
             binance_futures_live: Whether Binance futures live trading is enabled.
             backpack_futures_live: Whether Backpack futures live trading is enabled.
+            is_kill_switch_active: Optional callback to check if Kill-Switch is active.
+                If provided and returns True, execute_entry will be blocked as a
+                final safety guard (defense-in-depth for risk control).
         """
         self.positions = positions
         self.get_balance = get_balance
@@ -118,6 +123,7 @@ class TradeExecutor:
         self.trading_backend = trading_backend
         self.binance_futures_live = binance_futures_live
         self.backpack_futures_live = backpack_futures_live
+        self.is_kill_switch_active = is_kill_switch_active
 
     def execute_entry(self, coin: str, decision: Dict[str, Any], current_price: float) -> None:
         """Execute entry trade.
@@ -126,7 +132,23 @@ class TradeExecutor:
             coin: Coin symbol (e.g., "BTC").
             decision: AI decision dictionary.
             current_price: Current market price.
+        
+        Note:
+            This method includes a Kill-Switch final guard as defense-in-depth.
+            Even if the caller fails to check Kill-Switch status, this method
+            will block entry trades when Kill-Switch is active.
         """
+        # Kill-Switch final guard (defense-in-depth for AC3 / Task 2.3)
+        # This ensures entry trades are blocked even if caller forgets to check
+        if RISK_CONTROL_ENABLED and self.is_kill_switch_active is not None:
+            if self.is_kill_switch_active():
+                logging.warning(
+                    "Kill-Switch active (executor guard): blocking entry for %s at price %.4f",
+                    coin,
+                    current_price,
+                )
+                return
+
         if coin in self.positions:
             logging.warning(f"{coin}: Already have position, skipping entry")
             return

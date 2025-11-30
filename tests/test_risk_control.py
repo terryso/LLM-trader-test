@@ -1,9 +1,18 @@
 """Tests for core/risk_control.py module."""
 import json
+import logging
+from datetime import datetime, timezone
+from unittest import mock
 
 import pytest
 
-from core.risk_control import RiskControlState
+from core.risk_control import (
+    RiskControlState,
+    check_risk_limits,
+    activate_kill_switch,
+    deactivate_kill_switch,
+    apply_kill_switch_env_override,
+)
 
 
 class TestRiskControlStateDefaultValues:
@@ -247,3 +256,254 @@ class TestRiskControlStateImport:
 
         state = DirectImport()
         assert state.kill_switch_active is False
+
+
+class TestActivateKillSwitch:
+    """Tests for activate_kill_switch function."""
+
+    def test_activate_from_inactive_state(self):
+        """Should activate Kill-Switch and set reason and timestamp."""
+        state = RiskControlState()
+        triggered_at = datetime(2025, 11, 30, 12, 0, 0, tzinfo=timezone.utc)
+
+        new_state = activate_kill_switch(state, reason="test:manual", triggered_at=triggered_at)
+
+        assert new_state.kill_switch_active is True
+        assert new_state.kill_switch_reason == "test:manual"
+        assert new_state.kill_switch_triggered_at == "2025-11-30T12:00:00+00:00"
+        # Original state should be unchanged
+        assert state.kill_switch_active is False
+
+    def test_activate_with_default_timestamp(self):
+        """Should use current UTC time when triggered_at is None."""
+        state = RiskControlState()
+
+        new_state = activate_kill_switch(state, reason="env:KILL_SWITCH")
+
+        assert new_state.kill_switch_active is True
+        assert new_state.kill_switch_reason == "env:KILL_SWITCH"
+        assert new_state.kill_switch_triggered_at is not None
+        # Verify it's a valid ISO 8601 timestamp
+        parsed = datetime.fromisoformat(new_state.kill_switch_triggered_at)
+        assert parsed.tzinfo is not None
+
+    def test_activate_preserves_daily_loss_fields(self):
+        """Should not modify daily loss related fields."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+            daily_loss_pct=-3.5,
+            daily_loss_triggered=False,
+        )
+
+        new_state = activate_kill_switch(state, reason="test:preserve")
+
+        assert new_state.daily_start_equity == 10000.0
+        assert new_state.daily_start_date == "2025-11-30"
+        assert new_state.daily_loss_pct == -3.5
+        assert new_state.daily_loss_triggered is False
+
+
+class TestDeactivateKillSwitch:
+    """Tests for deactivate_kill_switch function."""
+
+    def test_deactivate_from_active_state(self):
+        """Should deactivate Kill-Switch and clear reason and timestamp."""
+        state = RiskControlState(
+            kill_switch_active=True,
+            kill_switch_reason="test:active",
+            kill_switch_triggered_at="2025-11-30T10:00:00+00:00",
+        )
+
+        new_state = deactivate_kill_switch(state)
+
+        assert new_state.kill_switch_active is False
+        assert new_state.kill_switch_reason is None
+        assert new_state.kill_switch_triggered_at is None
+        # Original state should be unchanged
+        assert state.kill_switch_active is True
+
+    def test_deactivate_preserves_daily_loss_fields(self):
+        """Should not modify daily loss related fields."""
+        state = RiskControlState(
+            kill_switch_active=True,
+            kill_switch_reason="daily_loss",
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+            daily_loss_pct=-5.0,
+            daily_loss_triggered=True,
+        )
+
+        new_state = deactivate_kill_switch(state)
+
+        assert new_state.daily_start_equity == 10000.0
+        assert new_state.daily_start_date == "2025-11-30"
+        assert new_state.daily_loss_pct == -5.0
+        assert new_state.daily_loss_triggered is True
+
+
+class TestApplyKillSwitchEnvOverride:
+    """Tests for apply_kill_switch_env_override function (AC1 priority logic)."""
+
+    def test_env_not_set_preserves_inactive_state(self):
+        """When env var is not set, should preserve inactive state."""
+        state = RiskControlState(kill_switch_active=False)
+
+        new_state, overridden = apply_kill_switch_env_override(state, kill_switch_env=None)
+
+        assert new_state.kill_switch_active is False
+        assert overridden is False
+
+    def test_env_not_set_preserves_active_state(self):
+        """When env var is not set, should preserve active state from persistence."""
+        state = RiskControlState(
+            kill_switch_active=True,
+            kill_switch_reason="persisted:reason",
+            kill_switch_triggered_at="2025-11-30T08:00:00+00:00",
+        )
+
+        new_state, overridden = apply_kill_switch_env_override(state, kill_switch_env=None)
+
+        assert new_state.kill_switch_active is True
+        assert new_state.kill_switch_reason == "persisted:reason"
+        assert overridden is False
+
+    @pytest.mark.parametrize("env_value", ["true", "True", "TRUE", "1", "yes", "on"])
+    def test_env_true_activates_kill_switch(self, env_value):
+        """KILL_SWITCH=true should activate Kill-Switch."""
+        state = RiskControlState(kill_switch_active=False)
+
+        new_state, overridden = apply_kill_switch_env_override(state, kill_switch_env=env_value)
+
+        assert new_state.kill_switch_active is True
+        assert new_state.kill_switch_reason == "env:KILL_SWITCH"
+        assert new_state.kill_switch_triggered_at is not None
+        assert overridden is True
+
+    @pytest.mark.parametrize("env_value", ["false", "False", "FALSE", "0", "no", "off"])
+    def test_env_false_deactivates_kill_switch(self, env_value):
+        """KILL_SWITCH=false should deactivate Kill-Switch."""
+        state = RiskControlState(
+            kill_switch_active=True,
+            kill_switch_reason="persisted:reason",
+            kill_switch_triggered_at="2025-11-30T08:00:00+00:00",
+        )
+
+        new_state, overridden = apply_kill_switch_env_override(state, kill_switch_env=env_value)
+
+        assert new_state.kill_switch_active is False
+        assert new_state.kill_switch_reason is None
+        assert new_state.kill_switch_triggered_at is None
+        assert overridden is True
+
+    def test_env_true_on_already_active_updates_reason(self):
+        """KILL_SWITCH=true on already active state should update reason to env:KILL_SWITCH."""
+        state = RiskControlState(
+            kill_switch_active=True,
+            kill_switch_reason="persisted:reason",
+            kill_switch_triggered_at="2025-11-30T08:00:00+00:00",
+        )
+
+        new_state, overridden = apply_kill_switch_env_override(state, kill_switch_env="true")
+
+        assert new_state.kill_switch_active is True
+        assert new_state.kill_switch_reason == "env:KILL_SWITCH"
+        assert overridden is True
+
+    def test_env_true_on_already_active_with_env_reason_no_change(self):
+        """KILL_SWITCH=true on state already set by env should not report override."""
+        state = RiskControlState(
+            kill_switch_active=True,
+            kill_switch_reason="env:KILL_SWITCH",
+            kill_switch_triggered_at="2025-11-30T08:00:00+00:00",
+        )
+
+        new_state, overridden = apply_kill_switch_env_override(state, kill_switch_env="true")
+
+        assert new_state.kill_switch_active is True
+        assert new_state.kill_switch_reason == "env:KILL_SWITCH"
+        assert overridden is False
+
+    def test_env_false_on_already_inactive_no_change(self):
+        """KILL_SWITCH=false on inactive state should not report override."""
+        state = RiskControlState(kill_switch_active=False)
+
+        new_state, overridden = apply_kill_switch_env_override(state, kill_switch_env="false")
+
+        assert new_state.kill_switch_active is False
+        assert overridden is False
+
+    def test_invalid_env_value_preserves_state(self, caplog):
+        """Invalid env value should preserve state and log warning."""
+        state = RiskControlState(kill_switch_active=False)
+
+        with caplog.at_level(logging.WARNING):
+            new_state, overridden = apply_kill_switch_env_override(state, kill_switch_env="invalid")
+
+        assert new_state.kill_switch_active is False
+        assert overridden is False
+        assert "Invalid KILL_SWITCH environment variable value" in caplog.text
+
+
+class TestCheckRiskLimitsKillSwitch:
+    """Tests for check_risk_limits with Kill-Switch logic (AC2)."""
+
+    def test_returns_true_when_kill_switch_inactive(self):
+        """Should return True (allow entry) when Kill-Switch is inactive."""
+        state = RiskControlState(kill_switch_active=False)
+
+        result = check_risk_limits(
+            risk_control_state=state,
+            total_equity=10000.0,
+            risk_control_enabled=True,
+        )
+
+        assert result is True
+
+    def test_returns_false_when_kill_switch_active(self):
+        """Should return False (block entry) when Kill-Switch is active."""
+        state = RiskControlState(
+            kill_switch_active=True,
+            kill_switch_reason="test:active",
+            kill_switch_triggered_at="2025-11-30T10:00:00+00:00",
+        )
+
+        result = check_risk_limits(
+            risk_control_state=state,
+            total_equity=10000.0,
+            risk_control_enabled=True,
+        )
+
+        assert result is False
+
+    def test_returns_true_when_risk_control_disabled(self):
+        """Should return True when RISK_CONTROL_ENABLED=False, even if Kill-Switch is active."""
+        state = RiskControlState(
+            kill_switch_active=True,
+            kill_switch_reason="test:active",
+        )
+
+        result = check_risk_limits(
+            risk_control_state=state,
+            total_equity=10000.0,
+            risk_control_enabled=False,
+        )
+
+        assert result is True
+
+    def test_logs_warning_when_kill_switch_active(self, caplog):
+        """Should log warning when Kill-Switch is active."""
+        state = RiskControlState(
+            kill_switch_active=True,
+            kill_switch_reason="test:log",
+            kill_switch_triggered_at="2025-11-30T10:00:00+00:00",
+        )
+
+        with caplog.at_level(logging.WARNING):
+            check_risk_limits(
+                risk_control_state=state,
+                risk_control_enabled=True,
+            )
+
+        assert "Kill-Switch is active" in caplog.text
+        assert "test:log" in caplog.text

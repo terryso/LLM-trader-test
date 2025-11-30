@@ -1,6 +1,6 @@
 # Story 7.2.1: 实现 Kill-Switch 激活逻辑
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 
@@ -55,24 +55,24 @@ so that I can immediately stop all new entries while keeping existing positions 
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 – 定义 Kill-Switch 激活与优先级规则（AC1, AC4）**  
-  - [ ] 1.1 在 `core/risk_control.py` 中补充/整理帮助函数（例如 `activate_kill_switch(reason, triggered_at)`），集中管理 `RiskControlState` 上的 Kill-Switch 字段更新。  
-  - [ ] 1.2 在 `core/state.load_state()` 或 `core/risk_control` 初始化路径中实现 `KILL_SWITCH` 环境变量与持久化状态的优先级逻辑：优先使用环境变量，未设置时回退到状态文件。  
-  - [ ] 1.3 确保上述逻辑不改变每日亏损字段的现有行为，只负责 Kill-Switch 相关字段。  
+- [x] **Task 1 – 定义 Kill-Switch 激活与优先级规则（AC1, AC4）**  
+  - [x] 1.1 在 `core/risk_control.py` 中补充/整理帮助函数（例如 `activate_kill_switch(reason, triggered_at)`），集中管理 `RiskControlState` 上的 Kill-Switch 字段更新。  
+  - [x] 1.2 在 `core/state.load_state()` 或 `core/risk_control` 初始化路径中实现 `KILL_SWITCH` 环境变量与持久化状态的优先级逻辑：优先使用环境变量，未设置时回退到状态文件。  
+  - [x] 1.3 确保上述逻辑不改变每日亏损字段的现有行为，只负责 Kill-Switch 相关字段。  
 
-- [ ] **Task 2 – 集成 Kill-Switch 与风控检查入口（AC2, AC3）**  
-  - [ ] 2.1 在 `check_risk_limits(...)` 中读取当前 `RiskControlState` 与配置，当 Kill-Switch 激活时返回可被主循环检测到的「禁止 entry」标志。  
-  - [ ] 2.2 在 `_run_iteration()` 或封装调用中，根据风控检查结果决定是否允许处理当轮的 entry 决策。  
-  - [ ] 2.3 在 `execution/executor.py` / `execution/routing.py` 中增加最小改动，确保当 Kill-Switch 激活时不会下达新的 ENTRY 订单，同时不影响 close 与 SL/TP 路径。
+- [x] **Task 2 – 集成 Kill-Switch 与风控检查入口（AC2, AC3）**  
+  - [x] 2.1 在 `check_risk_limits(...)` 中读取当前 `RiskControlState` 与配置，当 Kill-Switch 激活时返回可被主循环检测到的「禁止 entry」标志。  
+  - [x] 2.2 在 `_run_iteration()` 或封装调用中，根据风控检查结果决定是否允许处理当轮的 entry 决策。  
+  - [x] 2.3 在 `execution/executor.py` / `execution/routing.py` 中增加最小改动，确保当 Kill-Switch 激活时不会下达新的 ENTRY 订单，同时不影响 close 与 SL/TP 路径。
 
-- [ ] **Task 3 – 持久化与重启行为验证（AC4）**  
-  - [ ] 3.1 在集成测试中模拟：第一次运行中激活 Kill-Switch 并保存状态，随后通过 `core.state.load_state()` 重启，验证状态保持。  
-  - [ ] 3.2 覆盖状态文件缺失/损坏场景，确认本 Story 的逻辑在异常情况下不会引发未捕获异常。  
+- [x] **Task 3 – 持久化与重启行为验证（AC4）**  
+  - [x] 3.1 在集成测试中模拟：第一次运行中激活 Kill-Switch 并保存状态，随后通过 `core.state.load_state()` 重启，验证状态保持。  
+  - [x] 3.2 覆盖状态文件缺失/损坏场景，确认本 Story 的逻辑在异常情况下不会引发未捕获异常。  
 
-- [ ] **Task 4 – 日志与测试完善（AC5）**  
-  - [ ] 4.1 在 Kill-Switch 激活路径中添加结构化日志条目，记录原因与上下文。  
-  - [ ] 4.2 在现有 `tests/test_risk_control_integration.py` 中增加对日志的断言（使用 `caplog` 等），确保关键事件被记录。  
-  - [ ] 4.3 运行完整测试套件（例如 `./scripts/run_tests.sh`），确认无回归。
+- [x] **Task 4 – 日志与测试完善（AC5）**  
+  - [x] 4.1 在 Kill-Switch 激活路径中添加结构化日志条目，记录原因与上下文。  
+  - [x] 4.2 在现有 `tests/test_risk_control_integration.py` 中增加对日志的断言（使用 `caplog` 等），确保关键事件被记录。  
+  - [x] 4.3 运行完整测试套件（例如 `./scripts/run_tests.sh`），确认无回归。
 
 ## Dev Notes
 
@@ -166,11 +166,23 @@ so that I can immediately stop all new entries while keeping existing positions 
 
 ### Completion Notes List
 
-- （本 Story 初始状态为 drafted，待实现后在此记录完成情况与关键决策。）
+- ✅ 实现了 `activate_kill_switch()` 和 `deactivate_kill_switch()` 帮助函数，使用 `dataclasses.replace()` 创建新状态实例，保持不可变性。
+- ✅ 实现了 `apply_kill_switch_env_override()` 函数，在 `core/state.load_state()` 中调用，实现环境变量优先级逻辑。
+- ✅ 更新 `check_risk_limits()` 返回 `False` 当 Kill-Switch 激活，主循环通过 `allow_entry` 参数传递给 `process_ai_decisions()`。
+- ✅ 在 `bot.py` 的 `process_ai_decisions()` 中实现 entry 信号阻止逻辑，close 和 hold 信号不受影响。
+- ✅ SL/TP 检查 (`check_stop_loss_take_profit()`) 在 Kill-Switch 激活期间仍正常工作（AC3）。
+- ✅ 添加了 36 个新测试用例覆盖所有 AC，测试套件从 420 增加到 456 个测试，全部通过。
+- ✅ [Code Review 反馈] 在 `execution/executor.py` 中添加 Kill-Switch 最终守卫（defense-in-depth），满足 Task 2.3 的位置要求。
+- ✅ [Code Review 反馈] 新增 3 个执行层守卫测试，测试套件从 456 增加到 459 个测试，全部通过。
 
 ### File List
 
-- （Story drafted 时预留条目，实际实现完成后由 Dev Agent 填写 NEW/MODIFIED 文件列表。）
+- **MODIFIED** `core/risk_control.py` — 添加 `activate_kill_switch()`、`deactivate_kill_switch()`、`apply_kill_switch_env_override()` 函数；更新 `check_risk_limits()` 实现 Kill-Switch 检查逻辑。
+- **MODIFIED** `core/state.py` — 在 `load_state()` 中调用 `apply_kill_switch_env_override()` 实现环境变量优先级。
+- **MODIFIED** `bot.py` — 更新 `process_ai_decisions()` 接受 `allow_entry` 参数；更新 `_run_iteration()` 传递风控检查结果。
+- **MODIFIED** `tests/test_risk_control.py` — 添加 `TestActivateKillSwitch`、`TestDeactivateKillSwitch`、`TestApplyKillSwitchEnvOverride`、`TestCheckRiskLimitsKillSwitch` 测试类。
+- **MODIFIED** `tests/test_risk_control_integration.py` — 添加 `KillSwitchEnvOverrideIntegrationTests`、`KillSwitchRestartPersistenceTests`、`KillSwitchBlocksEntryIntegrationTests`、`ExecutorKillSwitchGuardTests` 测试类。
+- **MODIFIED** `execution/executor.py` — 添加 `is_kill_switch_active` 回调参数和 `execute_entry` 中的 Kill-Switch 最终守卫（Task 2.3）。
 
 ---
 
@@ -179,3 +191,82 @@ so that I can immediately stop all new entries while keeping existing positions 
 | 版本 | 日期 | 作者 | 变更说明 |
 |------|------|------|----------|
 | 0.1 | 2025-11-30 | Bob (SM) | 初始 Story 草稿（通过 create-story 工作流生成，覆盖 Kill-Switch 激活逻辑与优先级规则） |
+| 1.0 | 2025-11-30 | Cascade | 实现完成：Kill-Switch 激活逻辑、环境变量优先级、主循环集成、测试覆盖（456 tests passed） |
+| 1.1 | 2025-11-30 | Cascade | Code Review 反馈修复：在 execution/executor.py 添加 Kill-Switch 最终守卫（Task 2.3），新增 3 个测试（459 tests passed） |
+| 1.2 | 2025-11-30 | Cascade | Senior Developer Review (AI) 通过，状态更新为 done |
+
+---
+
+## Senior Developer Review (AI)
+
+### Reviewer
+Cascade (AI)
+
+### Date
+2025-11-30
+
+### Outcome
+**Approve** ✅
+
+所有 Acceptance Criteria 已实现，所有 Tasks 已验证完成，459 个测试全部通过。Task 2.3 的位置问题已在第二轮修复中解决。
+
+### Summary
+本 Story 实现了 Kill-Switch 激活逻辑，包括：
+- 环境变量优先级覆盖持久化状态
+- 风控检查入口集成
+- 主循环和执行层双重防护
+- 完整的单元和集成测试覆盖
+
+### Acceptance Criteria Coverage
+
+| AC | Description | Status | Evidence |
+|---|---|---|---|
+| AC1 | Kill-Switch 状态与优先级语义 | ✅ IMPLEMENTED | `core/risk_control.py:128-245`, `core/state.py:134-142` |
+| AC2 | 与风控检查入口集成 | ✅ IMPLEMENTED | `core/risk_control.py:75-125` |
+| AC3 | Kill-Switch 激活后的交易行为约束 | ✅ IMPLEMENTED | `bot.py:376-414`, `execution/executor.py:141-150` |
+| AC4 | 持久化与重启语义 | ✅ IMPLEMENTED | `core/state.py:145-154`, integration tests |
+| AC5 | 日志与测试覆盖 | ✅ IMPLEMENTED | 459 tests passed |
+
+**Summary**: 5 of 5 acceptance criteria fully implemented
+
+### Task Completion Validation
+
+| Task | Marked | Verified | Evidence |
+|---|---|---|---|
+| 1.1 helper 函数 | ✅ | ✅ | `core/risk_control.py:128-178` |
+| 1.2 env 优先级逻辑 | ✅ | ✅ | `core/risk_control.py:181-245` |
+| 1.3 不修改每日亏损字段 | ✅ | ✅ | 单测验证 |
+| 2.1 check_risk_limits 返回禁止标志 | ✅ | ✅ | `core/risk_control.py:112-119` |
+| 2.2 主循环使用禁止标志 | ✅ | ✅ | `bot.py:609-623` |
+| 2.3 execution 层改动 | ✅ | ✅ | `execution/executor.py:141-150` |
+| 3.1 重启场景测试 | ✅ | ✅ | integration tests |
+| 3.2 缺失/损坏场景测试 | ✅ | ✅ | integration tests |
+| 4.1 结构化日志 | ✅ | ✅ | logging.warning calls |
+| 4.2 日志断言测试 | ✅ | ✅ | caplog tests |
+| 4.3 完整测试套件 | ✅ | ✅ | 459 passed |
+
+**Summary**: 11 of 11 completed tasks verified, 0 questionable, 0 false completions
+
+### Test Coverage and Gaps
+- 459 tests passed (39 new tests added)
+- Coverage includes unit tests, integration tests, and executor guard tests
+- No gaps identified
+
+### Architectural Alignment
+- ✅ Kill-Switch 状态集中在 `core/` 层
+- ✅ 执行层通过回调获取状态，保持解耦
+- ✅ 双重防护设计（bot 层 + executor 层）
+
+### Security Notes
+- 无安全问题
+
+### Best-Practices and References
+- 使用 `dataclasses.replace()` 保持不可变性
+- Defense-in-depth 设计模式
+- 可选回调参数保持向后兼容
+
+### Action Items
+
+**Advisory Notes:**
+- Note: 可考虑在后续 story 中将 KILL_SWITCH 环境变量解析逻辑统一到 config/settings.py
+- Note: 可考虑在 Kill-Switch 日志中添加 total_equity 上下文信息

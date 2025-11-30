@@ -60,7 +60,7 @@ development_status:
 
   # === Epic 7.2: Kill-Switch 核心功能 ===
   epic-7-2: backlog
-  7-2-1-实现-kill-switch-激活逻辑: ready-for-dev
+  7-2-1-实现-kill-switch-激活逻辑: done
   7-2-2-实现-kill-switch-解除逻辑: backlog
   7-2-3-实现信号过滤逻辑: backlog
   7-2-4-确保-sl-tp-在-kill-switch-期间正常工作: backlog

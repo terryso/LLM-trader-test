@@ -8,12 +8,10 @@ It also provides the check_risk_limits() entry point for the main trading loop.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, asdict
-from datetime import datetime
-from typing import Any, Dict, Optional, TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from core.risk_control import RiskControlState as _RiskControlState
+import os
+from dataclasses import dataclass, asdict, replace
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Tuple
 
 
 @dataclass
@@ -86,9 +84,9 @@ def check_risk_limits(
     It is called at the beginning of each iteration, before market data fetching
     and LLM decision making.
 
-    Currently, this function serves as a placeholder that logs the check and
-    returns immediately. The actual Kill-Switch and daily loss limit logic
-    will be implemented in Epic 7.2 and 7.3 respectively.
+    When Kill-Switch is active, this function returns False to signal that
+    new entry trades should be blocked. Close trades and SL/TP checks are
+    not affected by this function.
 
     Args:
         risk_control_state: The current risk control state object.
@@ -97,28 +95,150 @@ def check_risk_limits(
         risk_control_enabled: Whether risk control is enabled (from RISK_CONTROL_ENABLED).
 
     Returns:
-        True if trading should proceed, False if trading should be blocked
-        (e.g., Kill-Switch is active). Currently always returns True as
-        blocking logic is not yet implemented.
+        True if new entry trades should be allowed, False if they should be blocked
+        (e.g., Kill-Switch is active).
     """
     if not risk_control_enabled:
         logging.info("Risk control check skipped: RISK_CONTROL_ENABLED=False")
         return True
 
-    # Log the risk control check (placeholder for future Epic 7.2/7.3 logic)
+    # Log the risk control check
     logging.debug(
         "Risk control check: kill_switch_active=%s, daily_loss_pct=%.2f%%",
         risk_control_state.kill_switch_active,
         risk_control_state.daily_loss_pct,
     )
 
-    # Future Epic 7.2: Check Kill-Switch status
-    # if risk_control_state.kill_switch_active:
-    #     logging.warning("Kill-Switch is active: %s", risk_control_state.kill_switch_reason)
-    #     return False
+    # Check Kill-Switch status (Epic 7.2)
+    if risk_control_state.kill_switch_active:
+        logging.warning(
+            "Kill-Switch is active: reason=%s, triggered_at=%s",
+            risk_control_state.kill_switch_reason,
+            risk_control_state.kill_switch_triggered_at,
+        )
+        return False
 
     # Future Epic 7.3: Check daily loss limit
     # if daily_loss_limit_enabled and check_daily_loss_limit(...):
     #     return False
 
     return True
+
+
+def activate_kill_switch(
+    state: RiskControlState,
+    reason: str,
+    triggered_at: Optional[datetime] = None,
+) -> RiskControlState:
+    """Activate the Kill-Switch and return a new state.
+
+    This function creates a new RiskControlState with Kill-Switch activated.
+    It sets the reason and timestamp for the activation.
+
+    Args:
+        state: The current risk control state.
+        reason: The reason for activating Kill-Switch (e.g., "env:KILL_SWITCH",
+            "runtime:manual", "daily_loss_limit").
+        triggered_at: The timestamp when Kill-Switch was triggered. If None,
+            uses current UTC time.
+
+    Returns:
+        A new RiskControlState with Kill-Switch activated.
+    """
+    if triggered_at is None:
+        triggered_at = datetime.now(timezone.utc)
+
+    triggered_at_str = triggered_at.isoformat()
+
+    return replace(
+        state,
+        kill_switch_active=True,
+        kill_switch_reason=reason,
+        kill_switch_triggered_at=triggered_at_str,
+    )
+
+
+def deactivate_kill_switch(state: RiskControlState) -> RiskControlState:
+    """Deactivate the Kill-Switch and return a new state.
+
+    This function creates a new RiskControlState with Kill-Switch deactivated.
+    It clears the reason and timestamp fields.
+
+    Args:
+        state: The current risk control state.
+
+    Returns:
+        A new RiskControlState with Kill-Switch deactivated.
+    """
+    return replace(
+        state,
+        kill_switch_active=False,
+        kill_switch_reason=None,
+        kill_switch_triggered_at=None,
+    )
+
+
+def apply_kill_switch_env_override(
+    state: RiskControlState,
+    kill_switch_env: Optional[str] = None,
+) -> Tuple[RiskControlState, bool]:
+    """Apply KILL_SWITCH environment variable override to the state.
+
+    This function implements the priority logic for Kill-Switch:
+    - If KILL_SWITCH env var is explicitly set to 'true' or 'false', it overrides
+      the persisted state.
+    - If KILL_SWITCH env var is not set, the persisted state is preserved.
+
+    Args:
+        state: The current risk control state (typically loaded from persistence).
+        kill_switch_env: The value of KILL_SWITCH environment variable. If None,
+            reads from os.environ.
+
+    Returns:
+        A tuple of (new_state, was_overridden) where:
+        - new_state: The potentially modified RiskControlState.
+        - was_overridden: True if the env var caused a state change.
+    """
+    if kill_switch_env is None:
+        kill_switch_env = os.environ.get("KILL_SWITCH")
+
+    if kill_switch_env is None:
+        # Env var not set, preserve persisted state
+        return state, False
+
+    normalized = kill_switch_env.strip().lower()
+
+    if normalized in {"1", "true", "yes", "on"}:
+        # Env var explicitly enables Kill-Switch
+        if not state.kill_switch_active:
+            new_state = activate_kill_switch(state, reason="env:KILL_SWITCH")
+            logging.warning(
+                "Kill-Switch activated via environment variable: KILL_SWITCH=%s",
+                kill_switch_env,
+            )
+            return new_state, True
+        else:
+            # Already active, just update reason if different
+            if state.kill_switch_reason != "env:KILL_SWITCH":
+                new_state = replace(state, kill_switch_reason="env:KILL_SWITCH")
+                return new_state, True
+            return state, False
+
+    if normalized in {"0", "false", "no", "off"}:
+        # Env var explicitly disables Kill-Switch
+        if state.kill_switch_active:
+            new_state = deactivate_kill_switch(state)
+            logging.info(
+                "Kill-Switch deactivated via environment variable: KILL_SWITCH=%s",
+                kill_switch_env,
+            )
+            return new_state, True
+        return state, False
+
+    # Invalid value, preserve persisted state and log warning
+    logging.warning(
+        "Invalid KILL_SWITCH environment variable value '%s'; ignoring. "
+        "Valid values: true, false, 1, 0, yes, no, on, off",
+        kill_switch_env,
+    )
+    return state, False

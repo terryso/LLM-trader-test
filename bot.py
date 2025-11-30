@@ -362,6 +362,7 @@ def _get_executor() -> TradeExecutor:
         trading_backend=TRADING_BACKEND,
         binance_futures_live=BINANCE_FUTURES_LIVE,
         backpack_futures_live=BACKPACK_FUTURES_LIVE,
+        is_kill_switch_active=lambda: _core_state.risk_control_state.kill_switch_active,
     )
 
 
@@ -373,8 +374,14 @@ def execute_close(coin: str, decision: Dict, current_price: float) -> None:
     _get_executor().execute_close(coin, decision, current_price)
 
 
-def process_ai_decisions(decisions: Dict[str, Any]) -> None:
-    """Process AI decisions for all coins."""
+def process_ai_decisions(decisions: Dict[str, Any], *, allow_entry: bool = True) -> None:
+    """Process AI decisions for all coins.
+    
+    Args:
+        decisions: Dictionary of AI decisions keyed by coin.
+        allow_entry: If False, entry signals are blocked (Kill-Switch active).
+            Close and hold signals are still processed normally.
+    """
     executor = _get_executor()
     for coin in SYMBOL_TO_COIN.values():
         if coin not in decisions:
@@ -392,7 +399,16 @@ def process_ai_decisions(decisions: Dict[str, Any]) -> None:
         
         price = data["price"]
         if signal == "entry":
-            execute_entry(coin, decision, price)
+            if allow_entry:
+                execute_entry(coin, decision, price)
+            else:
+                # Kill-Switch active: block entry and log
+                logging.warning(
+                    "Kill-Switch active, blocking entry signal for %s (price=%.4f, confidence=%d)",
+                    coin,
+                    price,
+                    decision.get("confidence", 0),
+                )
         elif signal == "close":
             execute_close(coin, decision, price)
         elif signal == "hold":
@@ -590,20 +606,22 @@ def _run_iteration() -> None:
     print(f"{Fore.CYAN}{'='*20}\n")
     
     # Risk control check (before market data and LLM calls)
-    check_risk_limits(
+    # Returns False if Kill-Switch is active (entry trades should be blocked)
+    allow_entry = check_risk_limits(
         risk_control_state=_core_state.risk_control_state,
         total_equity=calculate_total_equity(),
         iteration_time=get_current_time(),
         risk_control_enabled=RISK_CONTROL_ENABLED,
     )
     
+    # SL/TP checks always run, even when Kill-Switch is active (AC3)
     check_stop_loss_take_profit()
     
     # Get AI decisions
     logging.info("Requesting trading decisions...")
     decisions = call_deepseek_api(format_prompt_for_deepseek())
     if decisions:
-        process_ai_decisions(decisions)
+        process_ai_decisions(decisions, allow_entry=allow_entry)
     
     # Display summary
     _display_portfolio_summary(
