@@ -45,6 +45,36 @@ def _parse_float_env(value: Optional[str], *, default: float) -> float:
         return default
 
 
+def _parse_float_env_with_range(
+    value: Optional[str],
+    *,
+    default: float,
+    min_val: float,
+    max_val: float,
+    var_name: str,
+) -> float:
+    """Convert environment string to float with range validation.
+
+    If the value is outside [min_val, max_val], logs a warning and returns default.
+    """
+    if value is None or value == "":
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        EARLY_ENV_WARNINGS.append(
+            f"Invalid {var_name} value '{value}'; using default {default:.2f}"
+        )
+        return default
+    if parsed < min_val or parsed > max_val:
+        EARLY_ENV_WARNINGS.append(
+            f"{var_name} value {parsed:.2f} out of range [{min_val}, {max_val}]; "
+            f"using default {default:.2f}"
+        )
+        return default
+    return parsed
+
+
 def _parse_int_env(value: Optional[str], *, default: int) -> int:
     """Convert environment string to int with fallback and logging."""
     if value is None or value == "":
@@ -557,6 +587,27 @@ def _resolve_risk_free_rate() -> float:
 
 
 RISK_FREE_RATE = _resolve_risk_free_rate()
+
+# ───────────────────────── RISK CONTROL CONFIG ─────────────────────────
+RISK_CONTROL_ENABLED = _parse_bool_env(
+    os.getenv("RISK_CONTROL_ENABLED"),
+    default=True,
+)
+KILL_SWITCH = _parse_bool_env(
+    os.getenv("KILL_SWITCH"),
+    default=False,
+)
+DAILY_LOSS_LIMIT_ENABLED = _parse_bool_env(
+    os.getenv("DAILY_LOSS_LIMIT_ENABLED"),
+    default=True,
+)
+DAILY_LOSS_LIMIT_PCT = _parse_float_env_with_range(
+    os.getenv("DAILY_LOSS_LIMIT_PCT"),
+    default=5.0,
+    min_val=0.0,
+    max_val=100.0,
+    var_name="DAILY_LOSS_LIMIT_PCT",
+)
 
 # ───────────────────────── CSV FILES ─────────────────────────
 STATE_CSV = DATA_DIR / "portfolio_state.csv"

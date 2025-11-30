@@ -557,7 +557,10 @@ def main() -> None:
 
 def _run_iteration() -> None:
     """Run single iteration."""
+    global iteration_counter
     iteration = increment_iteration_counter()
+    # Keep bot.iteration_counter in sync with core.state.iteration_counter
+    iteration_counter = iteration
     clear_iteration_messages()
     
     if not get_binance_client():

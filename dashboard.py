@@ -14,6 +14,7 @@ import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 from binance.client import Client
 from dotenv import load_dotenv
+from exchange.market_data import BackpackMarketDataClient
 
 logging.basicConfig(level=logging.INFO)
 
@@ -47,6 +48,10 @@ else:
 
 BN_API_KEY = os.getenv("BN_API_KEY", "")
 BN_SECRET = os.getenv("BN_SECRET", "")
+
+MARKET_DATA_BACKEND = (os.getenv("MARKET_DATA_BACKEND") or "binance").strip().lower() or "binance"
+BACKPACK_API_BASE_URL = os.getenv("BACKPACK_API_BASE_URL", "https://api.backpack.exchange")
+BACKPACK_MARKET_CLIENT: BackpackMarketDataClient | None = None
 
 
 def resolve_risk_free_rate() -> float:
@@ -203,6 +208,33 @@ def parse_positions(position_text: str | float) -> pd.DataFrame:
 def fetch_current_prices(coins: List[str]) -> Dict[str, float | None]:
     """Fetch latest market prices for the provided coin tickers."""
     prices: Dict[str, float | None] = {coin: None for coin in coins}
+    backend = MARKET_DATA_BACKEND
+
+    # When MARKET_DATA_BACKEND=backpack, use Backpack public market data API
+    if backend == "backpack":
+        global BACKPACK_MARKET_CLIENT
+        if BACKPACK_MARKET_CLIENT is None:
+            BACKPACK_MARKET_CLIENT = BackpackMarketDataClient(BACKPACK_API_BASE_URL)
+        market_client = BACKPACK_MARKET_CLIENT
+
+        for coin in coins:
+            symbol = COIN_TO_SYMBOL.get(coin.upper(), f"{coin.upper()}USDT")
+            try:
+                klines = market_client.get_klines(symbol=symbol, interval="1m", limit=1)
+                if klines:
+                    # Kline layout matches Binance: [open_time, open, high, low, close, ...]
+                    close_value = klines[-1][4]
+                    prices[coin] = float(close_value)
+            except Exception as exc:
+                logging.warning(
+                    "Failed to fetch price for %s via Backpack market data: %s",
+                    symbol,
+                    exc,
+                )
+                prices[coin] = None
+        return prices
+
+    # Default: fall back to Binance spot ticker when available
     if not BINANCE_CLIENT:
         return prices
 
@@ -366,6 +398,15 @@ def render_portfolio_tab(state_df: pd.DataFrame, trades_df: pd.DataFrame) -> Non
     )
 
     st.subheader("Equity Over Time (with BTC benchmark)")
+    backend_label = (
+        "Backpack 公共行情 API"
+        if MARKET_DATA_BACKEND == "backpack"
+        else "Binance 现货 API" if BINANCE_CLIENT else "本地 CSV（仅入场价）"
+    )
+    st.caption(
+        f"价格来源：MARKET_DATA_BACKEND={MARKET_DATA_BACKEND}；"
+        f"Equity/BTC 基准来自 bot 写入 CSV；Open Positions 行情来自 {backend_label}。"
+    )
     base_investment = 10_000.0
 
     chart_frames = [
