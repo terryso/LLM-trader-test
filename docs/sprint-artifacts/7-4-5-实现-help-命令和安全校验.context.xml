@@ -1,0 +1,194 @@
+<story-context id='.bmad/bmm/workflows/4-implementation/story-context/template' v='1.0'>
+  <metadata>
+    <epicId>7.4</epicId>
+    <storyId>5</storyId>
+    <title>实现 help 命令和安全校验</title>
+    <status>ready-for-dev</status>
+    <generatedAt>2025-12-01T17:10:00+08:00</generatedAt>
+    <generator>BMAD Story Context Workflow (manual agent execution)</generator>
+    <sourceStoryPath>docs/sprint-artifacts/7-4-5-实现-help-命令和安全校验.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA><![CDATA[As a user]]></asA>
+    <iWant><![CDATA[I want a clear `/help` command and secure handling of all Telegram commands]]></iWant>
+    <soThat><![CDATA[so that I always know what I can do and the trading bot is protected from unauthorized or malformed requests.]]></soThat>
+    <tasks><![CDATA[
+- [ ] Task 1 – 设计 /help 文案与可扩展结构（AC1, AC3）  
+- [ ] Task 2 – 梳理安全校验与命令分发路径（AC2, AC3）  
+- [ ] Task 3 – 实现 /help handler 与未知命令处理（AC1–AC3）  
+- [ ] Task 4 – 测试与回归（AC4）  
+    ]]></tasks>
+  </story>
+
+  <acceptanceCriteria><![CDATA[
+1. AC1 – /help 返回完整且可扩展的命令帮助列表：在 Telegram 正常配置且风控系统可用时，授权 Chat 发送 `/help` 会收到结构化 Markdown 文本，至少列出 `/kill`、`/resume confirm`、`/status`、`/reset_daily`、`/help` 及其简要说明，语义与 PRD 一致，并可以在未来轻松扩展更多命令；在风控关闭时也能安全返回帮助信息。  
+2. AC2 – 仅处理来自授权 Chat 的命令：所有命令（包括 `/help`）均通过统一命令接收层验证 `chat_id == TELEGRAM_CHAT_ID`，授权 Chat 的命令才会被分发给 handler；未授权 Chat 的命令被静默丢弃但记录 WARNING 日志，包含 chat_id 与 command 信息，沿用 7.4.1 的日志格式。  
+3. AC3 – 未知命令统一回退到帮助信息且不中断主循环：授权 Chat 发送未知命令时，返回一条「未知命令」提示并附带与 `/help` 一致或子集的帮助内容，不修改任何 RiskControlState 字段；所有命令处理异常必须被捕获并记录 ERROR 日志，不得让异常冒泡中断 `_run_iteration()`。  
+4. AC4 – 单元测试与回归：在 tests/test_notifications_telegram_commands.py 中新增针对 `/help` 与未知命令的测试用例，覆盖授权/未授权 Chat、正常/异常路径；运行 ./scripts/run_tests.sh 时，既有测试与本 Story 新增测试全部通过。  
+  ]]></acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+      <doc>
+        <path>docs/prd-risk-control-enhancement.md</path>
+        <title>风控系统增强 - 产品需求文档</title>
+        <section>Telegram 命令集成 / 日志与审计</section>
+        <snippet>定义 FR22–FR24: 通过 Telegram 接收命令, 仅接受来自 TELEGRAM_CHAT_ID 的命令, 未知命令返回帮助信息, 并要求所有风控状态变更有完整日志与审计记录。</snippet>
+      </doc>
+      <doc>
+        <path>docs/epic-risk-control-enhancement.md</path>
+        <title>风控系统增强 - Epic 与 Story 分解</title>
+        <section>Epic 7.4 / Story 7.4.5: 实现 /help 命令和安全校验</section>
+        <snippet>从 Epic 视角给出 /help 命令的职责: 返回所有可用命令列表, 仅处理来自 TELEGRAM_CHAT_ID 的命令, 忽略其它 Chat 并记录日志, 未知命令回退到帮助信息。</snippet>
+      </doc>
+      <doc>
+        <path>docs/epics.md</path>
+        <title>LLM-trader-test - Epic Breakdown</title>
+        <section>Epic 7: 风控系统增强 / Epic 7.4: Telegram 命令集成</section>
+        <snippet>说明 Epic 7.4 作为风控系统的 Telegram 操控界面, /help 是用户发现与理解其它风控命令的入口, 需要与 Kill-Switch 与每日亏损限制形成完整的应急控制闭环。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/7-4-1-实现-telegram-命令接收机制.md</path>
+        <title>Story 7.4.1: 实现 Telegram 命令接收机制</title>
+        <section>Dev Notes / Architecture &amp; Implementation Constraints</section>
+        <snippet>定义 TelegramCommandHandler、getUpdates 轮询与 chat_id 过滤策略, 为 7.4.5 提供统一的命令接收与安全校验入口, 所有命令（含 /help）必须复用该路径。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/7-4-2-实现-kill-和-resume-命令.md</path>
+        <title>Story 7.4.2: 实现 kill 和 resume 命令</title>
+        <section>Dev Notes / Requirements &amp; Context Summary</section>
+        <snippet>描述 /kill 与 /resume 如何通过命令 handler 更新 RiskControlState 并记录审计事件, /help 与未知命令需沿用相同的处理模式与日志/审计框架, 但不修改状态。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/7-4-3-实现-status-命令.md</path>
+        <title>Story 7.4.3: 实现 status 命令</title>
+        <section>Dev Notes / Architecture &amp; Implementation Constraints</section>
+        <snippet>给出 /status 命令的 MarkdownV2 文案结构与风险状态展示字段, /help 的文案与 Markdown 使用应与之风格统一并复用相同的转义与发送机制。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/7-4-4-实现-reset-daily-命令.md</path>
+        <title>Story 7.4.4: 实现 reset_daily 命令</title>
+        <section>Dev Notes / Learnings from Previous Story</section>
+        <snippet>总结了在 Telegram 命令层与 core.risk_control 之间通过 helper 解耦、使用 CommandResult 与审计事件记录状态变更的经验, 7.4.5 应在此基础上实现只读型 /help 与未知命令处理。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/06-project-structure-and-mapping.md</path>
+        <title>架构: 项目结构与 PRD 映射</title>
+        <section>Telegram 通知与风控映射</section>
+        <snippet>说明 notifications/ 与 core/ 层在整体架构中的位置, 要求 Telegram 命令逻辑集中在 notifications/ 层, 不直接耦合核心交易与策略逻辑。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/07-implementation-patterns.md</path>
+        <title>实现模式与一致性规则</title>
+        <section>错误处理与日志模式 / 通信与耦合模式</section>
+        <snippet>规定外部服务集成与错误处理的一致性原则, 7.4.5 的 /help 与未知命令处理必须遵守: 捕获异常、记录日志, 不中断交易主循环。</snippet>
+      </doc>
+    </docs>
+
+    <code>
+      <codeArtifact>
+        <path>notifications/telegram_commands.py</path>
+        <kind>notifications</kind>
+        <symbol>TelegramCommand, TelegramCommandHandler, process_telegram_commands, CommandResult, create_kill_resume_handlers, handle_kill_command, handle_resume_command, handle_status_command, handle_reset_daily_command</symbol>
+        <lines>1-915</lines>
+        <reason>命令接收与分发的核心模块, /help 与未知命令的 handler 将在此模块中实现并通过 handlers dict 注册, 复用统一的日志与审计封装。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>notifications/telegram.py</path>
+        <kind>notifications</kind>
+        <symbol>send_telegram_message, strip_ansi_codes, escape_markdown</symbol>
+        <lines>1-260</lines>
+        <reason>封装 Telegram 发送逻辑与 MarkdownV2 转义 helper, /help 与未知命令的回复文案应通过该模块或等价封装发送。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>bot.py</path>
+        <kind>main-loop</kind>
+        <symbol>get_telegram_command_handler, poll_telegram_commands</symbol>
+        <lines>223-281</lines>
+        <reason>展示 Telegram 命令轮询在主循环中的位置, 所有命令（包括 /help 与未知命令）应通过 poll_telegram_commands → process_telegram_commands 链路处理, 不直接在主循环中做 ad-hoc 分支。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>tests/test_notifications_telegram_commands.py</path>
+        <kind>tests</kind>
+        <symbol>TestCommandParsing, TestChatIdFiltering, TestProcessTelegramCommands, TestFullPollingFlow, TestHandleKillCommand, TestHandleResumeCommand, TestHandleStatusCommand</symbol>
+        <lines>1-817</lines>
+        <reason>覆盖命令解析、chat_id 过滤与命令分发的当前行为, 7.4.5 需要在此文件中新增针对 /help 与未知命令的测试用例, 并复用既有 fixture 与辅助函数。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>config/settings.py</path>
+        <kind>config</kind>
+        <symbol>RISK_CONTROL_ENABLED, DAILY_LOSS_LIMIT_ENABLED, DAILY_LOSS_LIMIT_PCT, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID</symbol>
+        <lines>1-260</lines>
+        <reason>集中定义风控与 Telegram 相关环境变量, /help 文案与安全校验逻辑需要尊重这些配置, 如 RISK_CONTROL_ENABLED 关闭时的提示语与 TELEGRAM_CHAT_ID 的校验。</reason>
+      </codeArtifact>
+    </code>
+
+    <dependencies>
+      <dependency ecosystem='python' name='requests' version='2.31.0' />
+      <dependency ecosystem='python' name='python-dotenv' version='1.0.0' />
+      <dependency ecosystem='python' name='pandas' version='2.2.3' />
+      <dependency ecosystem='python' name='numpy' version='2.1.3' />
+      <dependency ecosystem='python' name='pytest' version='dev' />
+    </dependencies>
+  </artifacts>
+
+  <constraints><![CDATA[
+- 所有 Telegram 命令（包括 /help 与未知命令）必须通过 TelegramCommandHandler 的 chat_id 过滤, 不得在下游 handler 中绕过或重复实现安全校验。  
+- /help 与未知命令处理逻辑不得修改 RiskControlState, 只能读取当前状态用于文案或日志, 以避免误触发或解除 Kill-Switch / 每日亏损限制。  
+- 命令处理路径需与 /kill / /resume / /status / /reset_daily 保持一致的错误处理与日志模式: 捕获异常, 记录 WARNING/ERROR 日志, 不中断交易主循环。  
+- 回复文案必须使用 Telegram MarkdownV2 并通过统一的转义 helper 处理特殊字符, 避免因转义错误导致消息发送失败。  
+- 未授权 Chat ID 发送的任意命令都不得返回包含内部状态的明细信息, 仅允许在日志中记录 WARNING, 防止信息泄露。  
+- 未知命令应统一回退到帮助信息, 避免出现「既不执行也不给反馈」的沉默失败体验。  
+  ]]></constraints>
+
+  <interfaces>
+    <interface>
+      <name>TelegramCommand</name>
+      <kind>dataclass</kind>
+      <signature>TelegramCommand(command: str, args: List[str], chat_id: str, message_id: int, raw_text: str, raw_update: Dict[str, Any])</signature>
+      <path>notifications/telegram_commands.py</path>
+    </interface>
+    <interface>
+      <name>TelegramCommandHandler</name>
+      <kind>class</kind>
+      <signature>TelegramCommandHandler(bot_token: str, allowed_chat_id: str, last_update_id: int = 0, timeout: int = 5, limit: int = 10)</signature>
+      <path>notifications/telegram_commands.py</path>
+    </interface>
+    <interface>
+      <name>process_telegram_commands</name>
+      <kind>function</kind>
+      <signature>process_telegram_commands(commands: List[TelegramCommand], command_handlers: Optional[Dict[str, Callable[[TelegramCommand], None]]] = None) -&gt; None</signature>
+      <path>notifications/telegram_commands.py</path>
+    </interface>
+    <interface>
+      <name>create_kill_resume_handlers</name>
+      <kind>factory-function</kind>
+      <signature>create_kill_resume_handlers(state: RiskControlState, positions_count_fn: Optional[Callable[[], int]] = None, send_fn: Optional[Callable[[str, str], None]] = None, record_event_fn: Optional[Callable[[str, str], None]] = None, bot_token: str = "", chat_id: str = "", total_equity_fn: Optional[Callable[[], Optional[float]]] = None, risk_control_enabled: bool = True, daily_loss_limit_enabled: bool = True, daily_loss_limit_pct: float = 5.0) -&gt; Dict[str, Callable[[TelegramCommand], None]]</signature>
+      <path>notifications/telegram_commands.py</path>
+    </interface>
+    <interface>
+      <name>RiskControlState</name>
+      <kind>dataclass</kind>
+      <signature>RiskControlState(kill_switch_active: bool, kill_switch_reason: Optional[str], kill_switch_triggered_at: Optional[str], daily_start_equity: Optional[float], daily_start_date: Optional[str], daily_loss_pct: float, daily_loss_triggered: bool)</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+  </interfaces>
+
+  <tests>
+    <standards><![CDATA[
+- 使用 pytest 作为测试框架, Telegram 命令相关测试集中在 tests/test_notifications_telegram_commands.py 中, 通过 mock requests 与 MagicMock 避免真实外部调用。  
+- 7.4.5 的测试应覆盖: 授权/未授权 Chat, /help 正常路径, 未知命令 fallback, 以及命令 handler 抛出异常时的错误处理行为。  
+- 对只读型命令 (/help 与未知命令) 的测试应显式断言 RiskControlState 未被修改, 以防止未来回归。  
+    ]]></standards>
+    <locations><![CDATA[
+- tests/test_notifications_telegram_commands.py  
+    ]]></locations>
+    <ideas><![CDATA[
+- 为 /help 实现单元测试: 构造授权 Chat 的 TelegramCommand("help"), 通过 handler 或集成路径调用, 断言返回的文本包含所有预期命令说明, 并符合 MarkdownV2 要求。  
+- 为未知命令实现单元测试: 构造 command="unknown" 的 TelegramCommand, 验证处理结果包含「未知命令」提示与帮助内容, 且 RiskControlState 不变。  
+- 利用 TestChatIdFiltering 已有测试覆盖未授权 Chat 的过滤行为, 如需增强, 可为包含 /help 的 update 集增加断言, 确保未授权 Chat 的命令不会进入业务 handler。  
+- 使用 process_telegram_commands 集成测试: 提供 handlers dict 仅包含 /help, 然后传入混合命令列表（含 /help、未知命令、无 handler 命令）, 验证 handler 调用次数与错误日志行为符合预期。  
+    ]]></ideas>
+  </tests>
+</story-context>

@@ -15,6 +15,7 @@ from core.risk_control import (
     update_daily_baseline,
     calculate_daily_loss_pct,
     check_daily_loss_limit,
+    reset_daily_baseline,
 )
 
 
@@ -1336,3 +1337,170 @@ class TestCheckDailyLossLimit:
 
         assert result is True  # Now triggered
         assert state.daily_loss_triggered is True
+
+
+class TestResetDailyBaseline:
+    """Tests for reset_daily_baseline helper (Story 7.4.4)."""
+
+    def test_resets_all_daily_fields(self):
+        """Should reset daily_start_equity, daily_start_date, daily_loss_pct, daily_loss_triggered."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-29",
+            daily_loss_pct=-6.5,
+            daily_loss_triggered=True,
+        )
+
+        new_state = reset_daily_baseline(state, current_equity=9350.0)
+
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        assert new_state.daily_start_equity == 9350.0
+        assert new_state.daily_start_date == today
+        assert new_state.daily_loss_pct == 0.0
+        assert new_state.daily_loss_triggered is False
+
+    def test_returns_new_state_object(self):
+        """Should return a new state object, not modify the original."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-29",
+            daily_loss_pct=-5.0,
+            daily_loss_triggered=True,
+        )
+
+        new_state = reset_daily_baseline(state, current_equity=9500.0)
+
+        # Original state should be unchanged
+        assert state.daily_start_equity == 10000.0
+        assert state.daily_loss_pct == -5.0
+        assert state.daily_loss_triggered is True
+
+        # New state should have updated values
+        assert new_state.daily_start_equity == 9500.0
+        assert new_state.daily_loss_pct == 0.0
+        assert new_state.daily_loss_triggered is False
+
+    def test_preserves_kill_switch_fields(self):
+        """Should not modify Kill-Switch related fields."""
+        state = RiskControlState(
+            kill_switch_active=True,
+            kill_switch_reason="Daily loss limit reached",
+            kill_switch_triggered_at="2025-11-30T10:00:00+00:00",
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+            daily_loss_pct=-6.0,
+            daily_loss_triggered=True,
+        )
+
+        new_state = reset_daily_baseline(state, current_equity=9400.0)
+
+        # Kill-Switch fields should be preserved
+        assert new_state.kill_switch_active is True
+        assert new_state.kill_switch_reason == "Daily loss limit reached"
+        assert new_state.kill_switch_triggered_at == "2025-11-30T10:00:00+00:00"
+
+    def test_accepts_custom_reason(self):
+        """Should accept custom reason for audit logging."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-29",
+        )
+
+        # Should not raise
+        new_state = reset_daily_baseline(
+            state,
+            current_equity=9500.0,
+            reason="custom:test_reason",
+        )
+
+        assert new_state.daily_start_equity == 9500.0
+
+    def test_logs_structured_audit_info(self, caplog):
+        """Should log structured audit information (AC4)."""
+        state = RiskControlState(
+            kill_switch_active=True,
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-29",
+            daily_loss_pct=-6.5,
+            daily_loss_triggered=True,
+        )
+
+        with caplog.at_level(logging.INFO):
+            reset_daily_baseline(
+                state,
+                current_equity=9350.0,
+                reason="telegram:/reset_daily",
+            )
+
+        # Verify structured log content
+        assert "Daily baseline manually reset" in caplog.text
+        assert "reason=telegram:/reset_daily" in caplog.text
+        assert "old_daily_start_equity=10000.00" in caplog.text
+        assert "new_daily_start_equity=9350.00" in caplog.text
+        assert "old_daily_loss_pct=-6.50%" in caplog.text
+        assert "new_daily_loss_pct=0.00%" in caplog.text
+        assert "old_daily_loss_triggered=True" in caplog.text
+        assert "new_daily_loss_triggered=False" in caplog.text
+        assert "kill_switch_active=True" in caplog.text
+
+    def test_handles_none_previous_equity(self, caplog):
+        """Should handle None previous equity gracefully."""
+        state = RiskControlState(
+            daily_start_equity=None,
+            daily_start_date=None,
+            daily_loss_pct=0.0,
+            daily_loss_triggered=False,
+        )
+
+        with caplog.at_level(logging.INFO):
+            new_state = reset_daily_baseline(state, current_equity=10000.0)
+
+        assert new_state.daily_start_equity == 10000.0
+        assert "old_daily_start_equity=None" in caplog.text
+
+    def test_idempotent_same_day_same_equity(self):
+        """Should be idempotent when called multiple times with same equity."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        state = RiskControlState(
+            daily_start_equity=9500.0,
+            daily_start_date=today,
+            daily_loss_pct=0.0,
+            daily_loss_triggered=False,
+        )
+
+        # First call
+        new_state1 = reset_daily_baseline(state, current_equity=9500.0)
+
+        # Second call on the result
+        new_state2 = reset_daily_baseline(new_state1, current_equity=9500.0)
+
+        # Both should have same values
+        assert new_state1.daily_start_equity == new_state2.daily_start_equity
+        assert new_state1.daily_start_date == new_state2.daily_start_date
+        assert new_state1.daily_loss_pct == new_state2.daily_loss_pct
+        assert new_state1.daily_loss_triggered == new_state2.daily_loss_triggered
+
+    def test_works_with_zero_equity(self):
+        """Should handle zero equity without error."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-29",
+        )
+
+        new_state = reset_daily_baseline(state, current_equity=0.0)
+
+        assert new_state.daily_start_equity == 0.0
+        assert new_state.daily_loss_pct == 0.0
+
+    def test_works_with_negative_equity(self):
+        """Should handle negative equity (margin call scenario) without error."""
+        state = RiskControlState(
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-29",
+        )
+
+        new_state = reset_daily_baseline(state, current_equity=-500.0)
+
+        assert new_state.daily_start_equity == -500.0
+        assert new_state.daily_loss_pct == 0.0

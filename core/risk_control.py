@@ -534,6 +534,80 @@ def deactivate_kill_switch(
     return new_state
 
 
+def reset_daily_baseline(
+    state: RiskControlState,
+    current_equity: float,
+    *,
+    reason: str = "telegram:/reset_daily",
+) -> RiskControlState:
+    """Manually reset the daily loss baseline via explicit user action.
+
+    This function is designed for the /reset_daily Telegram command. Unlike
+    update_daily_baseline() which is called automatically at day boundaries,
+    this function allows users to explicitly reset the daily baseline at any
+    time, typically after reviewing a large drawdown and deciding to start
+    a new risk window.
+
+    The function:
+    1. Updates daily_start_equity to current_equity
+    2. Updates daily_start_date to current UTC date
+    3. Resets daily_loss_pct to 0.0
+    4. Resets daily_loss_triggered to False
+
+    IMPORTANT: This function does NOT automatically deactivate Kill-Switch.
+    Users must explicitly call /resume confirm after /reset_daily to resume
+    trading. This design prevents accidental resumption after large losses.
+
+    Args:
+        state: The mutable RiskControlState instance to update.
+        current_equity: Current total equity to use as the new daily baseline.
+        reason: The reason for the reset (for audit logging).
+
+    Returns:
+        A new RiskControlState with updated daily baseline fields.
+
+    References:
+        - Epic 7.4.4: Implement /reset_daily command
+        - PRD FR12-FR18: Daily loss limit functionality
+    """
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # Capture old values for audit logging
+    old_daily_start_equity = state.daily_start_equity
+    old_daily_start_date = state.daily_start_date
+    old_daily_loss_pct = state.daily_loss_pct
+    old_daily_loss_triggered = state.daily_loss_triggered
+
+    # Create new state with reset daily baseline fields
+    new_state = replace(
+        state,
+        daily_start_equity=current_equity,
+        daily_start_date=today,
+        daily_loss_pct=0.0,
+        daily_loss_triggered=False,
+    )
+
+    # Log structured audit information (AC4)
+    logging.info(
+        "Daily baseline manually reset: reason=%s | "
+        "old_daily_start_equity=%s | new_daily_start_equity=%.2f | "
+        "old_daily_start_date=%s | new_daily_start_date=%s | "
+        "old_daily_loss_pct=%.2f%% | new_daily_loss_pct=0.00%% | "
+        "old_daily_loss_triggered=%s | new_daily_loss_triggered=False | "
+        "kill_switch_active=%s",
+        reason,
+        f"{old_daily_start_equity:.2f}" if old_daily_start_equity is not None else "None",
+        current_equity,
+        old_daily_start_date or "None",
+        today,
+        old_daily_loss_pct,
+        old_daily_loss_triggered,
+        state.kill_switch_active,
+    )
+
+    return new_state
+
+
 def apply_kill_switch_env_override(
     state: RiskControlState,
     kill_switch_env: Optional[str] = None,

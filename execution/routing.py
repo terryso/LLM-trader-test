@@ -14,6 +14,14 @@ from exchange.base import CloseResult, EntryResult
 from exchange.factory import get_exchange_client
 
 
+# Minimum reward-to-fee ratio and absolute expected reward (USD) required
+# for an entry to be considered worthwhile. These thresholds are applied
+# in compute_entry_plan using the theoretical move from current_price to
+# profit_target_price and an estimate of total fees (entry + exit).
+MIN_REWARD_FEE_RATIO = 3.0
+MIN_EXPECTED_REWARD_USD = 1.0
+
+
 @dataclass
 class EntryPlan:
     """Computed entry plan with position sizing and fees."""
@@ -192,6 +200,35 @@ def compute_entry_plan(
         fee_rate = maker_fee_rate if liquidity == "maker" else taker_fee_rate
 
     entry_fee = position_value * fee_rate
+
+    # ── 手续费性价比过滤 ──
+    # 1) 预估理论毛利：从当前价到止盈价的距离乘以仓位数量（不考虑滑点）。
+    reward_distance = abs(profit_target_price - current_price)
+    expected_gross_reward = quantity * reward_distance
+
+    # 2) 预估总手续费：简单假设进场和出场的手续费规模相近。
+    total_fees_est = entry_fee * 2.0
+
+    # 若理论毛利过小，则直接跳过该笔交易，避免在极小波动内磨手续费。
+    if expected_gross_reward < MIN_EXPECTED_REWARD_USD:
+        logging.info(
+            "%s: Expected gross reward %.4f < MIN_EXPECTED_REWARD_USD %.4f; skipping entry.",
+            coin,
+            expected_gross_reward,
+            MIN_EXPECTED_REWARD_USD,
+        )
+        return None
+
+    # 若总手续费>0，但毛利/手续费比值不足阈值，则认为不值得承担手续费成本。
+    if total_fees_est > 0 and expected_gross_reward / total_fees_est < MIN_REWARD_FEE_RATIO:
+        logging.info(
+            "%s: Reward/Fee ratio %.2f < MIN_REWARD_FEE_RATIO %.2f; skipping entry.",
+            coin,
+            expected_gross_reward / total_fees_est,
+            MIN_REWARD_FEE_RATIO,
+        )
+        return None
+
     total_cost = margin_required + entry_fee
     if total_cost > balance:
         logging.warning(

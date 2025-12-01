@@ -272,6 +272,10 @@ def poll_telegram_commands() -> None:
                 record_event_fn=log_risk_control_event,
                 bot_token=TELEGRAM_BOT_TOKEN,
                 chat_id=TELEGRAM_CHAT_ID,
+                total_equity_fn=calculate_total_equity,
+                risk_control_enabled=RISK_CONTROL_ENABLED,
+                daily_loss_limit_enabled=DAILY_LOSS_LIMIT_ENABLED,
+                daily_loss_limit_pct=DAILY_LOSS_LIMIT_PCT,
             )
             # Process commands with handlers
             process_telegram_commands(commands, command_handlers=command_handlers)

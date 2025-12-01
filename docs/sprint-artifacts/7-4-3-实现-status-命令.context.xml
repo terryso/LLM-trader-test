@@ -1,0 +1,196 @@
+<story-context id='.bmad/bmm/workflows/4-implementation/story-context/template' v='1.0'>
+  <metadata>
+    <epicId>7.4</epicId>
+    <storyId>3</storyId>
+    <title>实现 status 命令</title>
+    <status>drafted</status>
+    <generatedAt>2025-12-01T02:18:00+08:00</generatedAt>
+    <generator>BMAD Story Context Workflow (manual agent execution)</generator>
+    <sourceStoryPath>docs/sprint-artifacts/7-4-3-实现-status-命令.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA><![CDATA[As a user]]></asA>
+    <iWant><![CDATA[I want to check current risk control status via Telegram]]></iWant>
+    <soThat><![CDATA[so that I can monitor the bot's risk state and decide when to intervene.]]></soThat>
+    <tasks><![CDATA[
+- [ ] Task 1 – 设计 /status 命令处理接口与返回格式（AC1, AC2）  
+- [ ] Task 2 – 集成到命令处理与主循环（AC1, AC3）  
+- [ ] Task 3 – 日志与审计集成（AC4）  
+- [ ] Task 4 – 单元测试与回归（AC5）  
+    ]]></tasks>
+  </story>
+
+  <acceptanceCriteria><![CDATA[
+1. AC1 – /status 返回完整风控快照：从 RiskControlState 与组合状态中读取 Kill-Switch、每日亏损、阈值、持仓数量与当前权益并以一次命令返回。  
+2. AC2 – 文案与格式：使用统一的 Telegram MarkdownV2 文案风格与数值格式（包含 emoji、粗体标签、固定小数位），并在高风险状态下明确标记。  
+3. AC3 – 安全性与健壮性：仅对授权 Chat ID 返回状态，/status 为只读操作，不修改任何风控状态，错误与网络问题只记录日志不影响主循环。  
+4. AC4 – 日志与审计：为每次 /status 调用记录结构化日志，并可选记录 `action="RISK_CONTROL"` 类型审计事件，与 /kill 与 /resume 保持一致。  
+5. AC5 – 单元测试与回归：在 tests/test_notifications_telegram_commands.py 等处新增测试覆盖不同风控状态组合与异常路径，./scripts/run_tests.sh 全量通过。  
+  ]]></acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+      <doc>
+        <path>docs/prd-risk-control-enhancement.md</path>
+        <title>风控系统增强 - 产品需求文档</title>
+        <section>风控状态管理 / Telegram 命令集成</section>
+        <snippet>定义 RiskControlState 数据结构和 /status 命令的产品需求, 包括 Kill-Switch 与每日亏损状态、阈值与日志/审计行为。</snippet>
+      </doc>
+      <doc>
+        <path>docs/epic-risk-control-enhancement.md</path>
+        <title>风控系统增强 - Epic 与 Story 分解</title>
+        <section>Epic 7.4 / Story 7.4.3: 实现 /status 命令</section>
+        <snippet>将 7.4.3 定义为通过 Telegram /status 命令暴露当前风控状态的 Story, 给出 handle_status_command 示例与预期字段列表。</snippet>
+      </doc>
+      <doc>
+        <path>docs/epics.md</path>
+        <title>LLM-trader-test - Epic Breakdown</title>
+        <section>Epic 7.4: Telegram 命令集成</section>
+        <snippet>从 Epic 视角说明 Telegram 命令为 Kill-Switch 与每日亏损限制提供远程控制与可观测性, /status 用于查看当前风险状态。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/7-4-2-实现-kill-和-resume-命令.md</path>
+        <title>Story 7.4.2: 实现 kill 和 resume 命令</title>
+        <section>Dev Notes / Learnings from Previous Story</section>
+        <snippet>描述了 /kill 与 /resume 命令如何与 RiskControlState 和日志/审计集成, /status 需要在此基础上只读地展示状态。</snippet>
+      </doc>
+      <doc>
+        <path>docs/sprint-artifacts/7-3-4-实现每日亏损限制通知.md</path>
+        <title>Story 7.3.4: 实现每日亏损限制通知</title>
+        <section>Dev Notes / References</section>
+        <snippet>解释每日亏损限制触发时的通知文案与字段, /status 需要与这些字段和阈值定义保持一致。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/06-project-structure-and-mapping.md</path>
+        <title>架构: 项目结构与 PRD 映射</title>
+        <section>Telegram 通知与风控映射</section>
+        <snippet>说明 notifications/telegram.py 与 core/risk_control.py 在架构中的角色, /status 命令应遵循相同分层。</snippet>
+      </doc>
+      <doc>
+        <path>docs/architecture/07-implementation-patterns.md</path>
+        <title>实现模式与一致性规则</title>
+        <section>错误处理与日志模式</section>
+        <snippet>定义网络错误与外部服务调用时的日志与恢复模式, /status 命令需要沿用相同错误处理策略。</snippet>
+      </doc>
+    </docs>
+
+    <code>
+      <codeArtifact>
+        <path>notifications/telegram_commands.py</path>
+        <kind>notifications</kind>
+        <symbol>TelegramCommand, TelegramCommandHandler, process_telegram_commands, handle_kill_command, handle_resume_command, create_kill_resume_handlers</symbol>
+        <lines>1-745</lines>
+        <reason>命令接收与分发的核心模块, /status 将在此处注册命令处理逻辑并复用现有日志与错误处理模式。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>notifications/telegram.py</path>
+        <kind>notifications</kind>
+        <symbol>send_telegram_message, create_daily_loss_limit_notify_callback, create_kill_switch_notify_callbacks</symbol>
+        <lines>37-120, 500-620</lines>
+        <reason>封装 Telegram 发送与风险控制相关通知 helper, /status 回复文案应通过该模块的发送接口推送。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>core/risk_control.py</path>
+        <kind>risk-control</kind>
+        <symbol>RiskControlState, update_daily_baseline, calculate_daily_loss_pct, check_daily_loss_limit, check_risk_limits</symbol>
+        <lines>17-402</lines>
+        <reason>定义风控状态与每日亏损逻辑, /status 命令需要从此处读取 Kill-Switch 与每日亏损相关字段。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>bot.py</path>
+        <kind>main-loop</kind>
+        <symbol>_run_iteration, poll_telegram_commands</symbol>
+        <lines>684-772</lines>
+        <reason>展示 Telegram 命令轮询与风控检查在主循环中的顺序, /status 命令处理需保持在相同调用路径下执行。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>tests/test_notifications_telegram_commands.py</path>
+        <kind>tests</kind>
+        <symbol>TestProcessTelegramCommands, TestFullPollingFlow, TestHandleKillCommand, TestHandleResumeCommand</symbol>
+        <lines>532-1123</lines>
+        <reason>覆盖命令分发、/kill 与 /resume 流程, 将在此基础上新增 /status 相关测试。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>tests/test_risk_control.py</path>
+        <kind>tests</kind>
+        <symbol>RiskControlState, update_daily_baseline, calculate_daily_loss_pct, check_daily_loss_limit 测试</symbol>
+        <lines>1-260</lines>
+        <reason>验证风险控制状态与每日亏损逻辑, 为 /status 命令展示正确数值提供保证。</reason>
+      </codeArtifact>
+      <codeArtifact>
+        <path>config/settings.py</path>
+        <kind>config</kind>
+        <symbol>RISK_CONTROL_ENABLED, DAILY_LOSS_LIMIT_ENABLED, DAILY_LOSS_LIMIT_PCT</symbol>
+        <lines>591-610</lines>
+        <reason>定义风控与每日亏损限制的环境变量配置, /status 命令需要基于这些配置展示阈值与启用状态。</reason>
+      </codeArtifact>
+    </code>
+
+    <dependencies>
+      <dependency ecosystem='python' name='requests' version='2.31.0' />
+      <dependency ecosystem='python' name='python-dotenv' version='1.0.0' />
+      <dependency ecosystem='python' name='pandas' version='2.2.3' />
+      <dependency ecosystem='python' name='numpy' version='2.1.3' />
+      <dependency ecosystem='python' name='pytest' version='dev' />
+    </dependencies>
+  </artifacts>
+
+  <constraints><![CDATA[
+- /status 命令必须是只读操作, 不得修改 RiskControlState 或组合状态, 所有状态修改仍由 risk_control 模块与其它命令负责。  
+- 通过 notifications/telegram_commands.py 集中处理命令, 保持与 /kill 与 /resume 相同的分层与错误处理模式。  
+- 返回文案需使用 Telegram MarkdownV2, 严格使用转义 helper（如 _escape_markdown）避免格式错误导致消息发送失败。  
+- 展示的每日亏损百分比与阈值必须与 check_daily_loss_limit / check_risk_limits 使用的字段与配置保持一致, 避免两个来源的不一致。  
+- 未授权 Chat ID 的 /status 命令必须被忽略并记录 WARNING 日志, 不返回任何敏感状态信息。  
+  ]]></constraints>
+
+  <interfaces>
+    <interface>
+      <name>RiskControlState</name>
+      <kind>dataclass</kind>
+      <signature>RiskControlState(kill_switch_active: bool, kill_switch_reason: Optional[str], kill_switch_triggered_at: Optional[str], daily_start_equity: Optional[float], daily_start_date: Optional[str], daily_loss_pct: float, daily_loss_triggered: bool)</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+    <interface>
+      <name>check_risk_limits</name>
+      <kind>function</kind>
+      <signature>check_risk_limits(risk_control_state: RiskControlState, total_equity: Optional[float], iteration_time: Optional[datetime], risk_control_enabled: bool, daily_loss_limit_enabled: bool, daily_loss_limit_pct: float, positions_count: int, notify_daily_loss_fn, record_event_fn) -&gt; bool</signature>
+      <path>core/risk_control.py</path>
+    </interface>
+    <interface>
+      <name>TelegramCommand</name>
+      <kind>dataclass</kind>
+      <signature>TelegramCommand(command: str, args: List[str], chat_id: str, message_id: int, raw_text: str, raw_update: Dict[str, Any])</signature>
+      <path>notifications/telegram_commands.py</path>
+    </interface>
+    <interface>
+      <name>TelegramCommandHandler</name>
+      <kind>class</kind>
+      <signature>TelegramCommandHandler(bot_token: str, allowed_chat_id: str, last_update_id: int = 0, timeout: int = 5, limit: int = 10)</signature>
+      <path>notifications/telegram_commands.py</path>
+    </interface>
+    <interface>
+      <name>process_telegram_commands</name>
+      <kind>function</kind>
+      <signature>process_telegram_commands(commands: List[TelegramCommand], command_handlers: Optional[Dict[str, Callable[[TelegramCommand], None]]] = None) -&gt; None</signature>
+      <path>notifications/telegram_commands.py</path>
+    </interface>
+  </interfaces>
+
+  <tests>
+    <standards><![CDATA[
+- 使用 pytest 作为测试框架, 所有 Telegram 命令相关测试放在 tests/test_notifications_telegram_commands.py 中, 通过 mock requests / mock 处理函数避免真实外部调用。  
+- 对 /status 的测试应覆盖不同风险状态组合（Kill-Switch 激活/未激活、每日亏损触发/未触发、风控启用/禁用）, 并验证文案与数值与 RiskControlState 中的字段一致。  
+- 日志与审计相关断言应复用现有模式（例如对 /kill 与 /resume 的测试）。  
+    ]]></standards>
+    <locations><![CDATA[
+- tests/test_notifications_telegram_commands.py  
+- tests/test_risk_control.py  
+    ]]></locations>
+    <ideas><![CDATA[
+- 为不同 RiskControlState 组合构造 fake 状态（正常、Kill-Switch 激活、每日亏损触发）, 调用 /status 处理函数并验证返回文本中字段与 emoji 是否正确映射。  
+- 模拟未授权 Chat ID 发送 /status, 验证不会返回任何状态文本并记录 WARNING 日志。  
+- 在命令处理过程中注入异常（例如 fake 处理函数抛错）, 验证日志记录 ERROR 且 process_telegram_commands 继续处理其它命令。  
+    ]]></ideas>
+  </tests>
+</story-context>

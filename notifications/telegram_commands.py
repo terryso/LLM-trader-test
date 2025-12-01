@@ -10,6 +10,7 @@ polling mechanism. It provides:
 This module is part of Epic 7.4: Telegram Command Integration.
 Story 7.4.1: Implement Telegram command receiving mechanism.
 Story 7.4.2: Implement /kill and /resume commands.
+Story 7.4.5: Implement /help command and security validation.
 """
 from __future__ import annotations
 
@@ -325,36 +326,80 @@ def process_telegram_commands(
     """Process a list of Telegram commands.
     
     This is a neutral dispatch entry point for command processing.
-    In Story 7.4.1, this function only logs received commands.
-    Stories 7.4.2-7.4.5 will implement actual command handlers.
+    Commands are dispatched to their registered handlers. Unknown commands
+    are handled by the "__unknown__" handler if registered, otherwise logged.
     
     Args:
         commands: List of TelegramCommand objects to process.
         command_handlers: Optional dict mapping command names to handler functions.
             If not provided, commands are only logged.
+            Special key "__unknown__" can be used for unknown command fallback.
+    
+    Note:
+        All exceptions are caught and logged to prevent command processing
+        from interrupting the main trading loop (AC3).
     """
     if not commands:
         return
     
     for cmd in commands:
-        if command_handlers and cmd.command in command_handlers:
-            try:
+        try:
+            if command_handlers and cmd.command in command_handlers:
                 command_handlers[cmd.command](cmd)
-            except Exception as exc:
-                logging.error(
-                    "Error processing Telegram command /%s: %s",
+            elif command_handlers and "__unknown__" in command_handlers:
+                # Use unknown handler for unrecognized commands (Story 7.4.5)
+                command_handlers["__unknown__"](cmd)
+            else:
+                # Log unhandled commands at DEBUG level when no unknown handler
+                logging.debug(
+                    "Telegram command received (no handler): /%s %s | chat_id=%s",
                     cmd.command,
-                    exc,
+                    " ".join(cmd.args) if cmd.args else "",
+                    cmd.chat_id,
                 )
-        else:
-            # Log unhandled commands at DEBUG level
-            # Stories 7.4.2-7.4.5 will add actual handlers
-            logging.debug(
-                "Telegram command received (no handler): /%s %s | chat_id=%s",
+        except Exception as exc:
+            # Catch all exceptions to prevent interrupting main loop (AC3)
+            logging.error(
+                "Error processing Telegram command /%s: %s",
                 cmd.command,
-                " ".join(cmd.args) if cmd.args else "",
-                cmd.chat_id,
+                exc,
             )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# HELP MESSAGE AND COMMAND REGISTRY (Story 7.4.5)
+# ═══════════════════════════════════════════════════════════════════
+
+# Command registry for help message generation
+# Each entry: (command, description)
+# This allows easy extension when new commands are added
+COMMAND_REGISTRY: list[tuple[str, str]] = [
+    ("/kill", "激活 Kill\\-Switch，暂停所有新开仓"),
+    ("/resume confirm", "解除 Kill\\-Switch（需二次确认）"),
+    ("/status", "查看当前风控状态与每日亏损信息"),
+    ("/reset\\_daily", "手动重置每日亏损基准"),
+    ("/help", "显示此帮助信息"),
+]
+
+
+def _build_help_message(risk_control_enabled: bool = True) -> str:
+    """Build the help message from command registry.
+    
+    Args:
+        risk_control_enabled: Whether risk control is enabled.
+    
+    Returns:
+        MarkdownV2 formatted help message.
+    """
+    lines = ["📖 *可用命令列表*\n"]
+    
+    for cmd, desc in COMMAND_REGISTRY:
+        lines.append(f"• `{cmd}` \\- {desc}")
+    
+    if not risk_control_enabled:
+        lines.append("\n⚠️ _风控系统当前未启用_")
+    
+    return "\n".join(lines)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -640,6 +685,337 @@ def _escape_markdown(text: str) -> str:
     return "".join(f"\\{char}" if char in specials else char for char in text)
 
 
+def handle_status_command(
+    cmd: TelegramCommand,
+    state: "RiskControlState",
+    *,
+    total_equity: Optional[float],
+    positions_count: int,
+    risk_control_enabled: bool,
+    daily_loss_limit_enabled: bool,
+    daily_loss_limit_pct: float,
+) -> CommandResult:
+    logging.info(
+        "Telegram /status command received: chat_id=%s, message_id=%d",
+        cmd.chat_id,
+        cmd.message_id,
+    )
+
+    if not risk_control_enabled:
+        message = (
+            "📊 *风控状态*\n\n"
+            "⚠️ 风控系统未启用或状态不可用。\n"
+            "请检查 RISK_CONTROL_ENABLED 配置。"
+        )
+        return CommandResult(
+            success=True,
+            message=message,
+            state_changed=False,
+            action=None,
+        )
+
+    kill_active = state.kill_switch_active
+    daily_loss_pct = state.daily_loss_pct
+    daily_triggered = state.daily_loss_triggered
+    daily_start_equity = state.daily_start_equity
+
+    if total_equity is None or total_equity != total_equity:
+        equity_display = "N/A"
+    else:
+        equity_display = f"${total_equity:,.2f}"
+
+    if daily_start_equity is None or daily_start_equity <= 0:
+        start_equity_display = "N/A"
+    else:
+        start_equity_display = f"${daily_start_equity:,.2f}"
+
+    kill_status = "🟢 已关闭"
+    if kill_active:
+        kill_status = "🔴 已暂停"
+
+    risk_flags = []
+    if kill_active:
+        risk_flags.append("🔴 Kill\\-Switch 已激活")
+    if daily_triggered:
+        risk_flags.append("⚠️ 日亏限制已触发")
+
+    flags_line = "".join(f"\n{flag}" for flag in risk_flags) if risk_flags else ""
+
+    loss_pct_display = f"{daily_loss_pct:.2f}%"
+    limit_pct_display = f"\\-{daily_loss_limit_pct:.2f}%" if daily_loss_limit_enabled else "已关闭"
+
+    reason = state.kill_switch_reason or "无"
+    triggered_at = state.kill_switch_triggered_at or "N/A"
+
+    message = (
+        "📊 *风控状态*\n\n"
+        f"*Kill\\-Switch:* {kill_status}\n"
+        f"*原因:* {_escape_markdown(reason)}\n"
+        f"*触发时间:* `{triggered_at}`\n"
+        f"*当日亏损:* `{loss_pct_display}`\n"
+        f"*亏损阈值:* `{limit_pct_display}`\n"
+        f"*今日起始权益:* `{start_equity_display}`\n"
+        f"*当前权益:* `{equity_display}`\n"
+        f"*当前持仓数量:* {positions_count}\n"
+        f"*风控开关:* {'启用' if risk_control_enabled else '关闭'}\n"
+        f"*每日亏损限制:* {'启用' if daily_loss_limit_enabled else '关闭'}"
+        f"{flags_line}"
+    )
+
+    logging.info(
+        "Telegram /status snapshot | chat_id=%s | kill_switch_active=%s | "
+        "daily_loss_pct=%.2f | daily_loss_triggered=%s | equity=%s | positions=%d",
+        cmd.chat_id,
+        kill_active,
+        daily_loss_pct,
+        daily_triggered,
+        equity_display,
+        positions_count,
+    )
+
+    return CommandResult(
+        success=True,
+        message=message,
+        state_changed=False,
+        action="RISK_CONTROL_STATUS",
+    )
+
+
+def handle_reset_daily_command(
+    cmd: TelegramCommand,
+    state: "RiskControlState",
+    *,
+    total_equity: Optional[float],
+    risk_control_enabled: bool,
+    reset_fn: Optional[Callable[["RiskControlState", float, str], "RiskControlState"]] = None,
+) -> CommandResult:
+    """Handle the /reset_daily command to manually reset daily loss baseline.
+
+    This function resets the daily loss baseline to the current equity, allowing
+    users to start a new risk window after reviewing a large drawdown day.
+
+    IMPORTANT: This command does NOT automatically deactivate Kill-Switch.
+    Users must explicitly call /resume confirm after /reset_daily to resume
+    trading. This design prevents accidental resumption after large losses.
+
+    Args:
+        cmd: The TelegramCommand object for /reset_daily.
+        state: The current RiskControlState to modify.
+        total_equity: Current total account equity for the new baseline.
+        risk_control_enabled: Whether risk control is globally enabled.
+        reset_fn: Optional function to reset daily baseline. If None, uses
+            the default reset_daily_baseline from core.risk_control.
+
+    Returns:
+        CommandResult with success status and response message.
+
+    References:
+        - AC1: /reset_daily 正确重置每日亏损基准
+        - AC2: 与 Kill-Switch / 每日亏损限制的协同行为
+        - AC3: 用户反馈与文案
+        - AC4: 安全性、健壮性与审计
+    """
+    from core.risk_control import reset_daily_baseline
+
+    # Log command receipt (AC4)
+    logging.info(
+        "Telegram /reset_daily command received: chat_id=%s, message_id=%d",
+        cmd.chat_id,
+        cmd.message_id,
+    )
+
+    # Check if risk control is enabled (AC3 - degradation)
+    if not risk_control_enabled:
+        message = (
+            "⚠️ *无法重置每日基准*\n\n"
+            "风控系统未启用，无法执行此操作。\n"
+            "请检查 `RISK_CONTROL_ENABLED` 配置。"
+        )
+        logging.warning(
+            "Telegram /reset_daily: risk control not enabled | chat_id=%s",
+            cmd.chat_id,
+        )
+        return CommandResult(
+            success=False,
+            message=message,
+            state_changed=False,
+            action=None,
+        )
+
+    # Check if equity is available (AC3 - degradation)
+    if total_equity is None or total_equity != total_equity:  # NaN check
+        message = (
+            "⚠️ *无法重置每日基准*\n\n"
+            "当前权益数据不可用，无法执行此操作。\n"
+            "请稍后重试。"
+        )
+        logging.warning(
+            "Telegram /reset_daily: equity unavailable | chat_id=%s | equity=%s",
+            cmd.chat_id,
+            total_equity,
+        )
+        return CommandResult(
+            success=False,
+            message=message,
+            state_changed=False,
+            action=None,
+        )
+
+    # Capture old values for response message
+    old_daily_start_equity = state.daily_start_equity
+    old_daily_loss_pct = state.daily_loss_pct
+    old_daily_loss_triggered = state.daily_loss_triggered
+    kill_switch_active = state.kill_switch_active
+
+    # Reset daily baseline
+    reason = "telegram:/reset_daily"
+    if reset_fn is not None:
+        new_state = reset_fn(state, total_equity, reason)
+    else:
+        new_state = reset_daily_baseline(
+            state,
+            total_equity,
+            reason=reason,
+        )
+
+    # Copy state changes back to the mutable state object
+    state.daily_start_equity = new_state.daily_start_equity
+    state.daily_start_date = new_state.daily_start_date
+    state.daily_loss_pct = new_state.daily_loss_pct
+    state.daily_loss_triggered = new_state.daily_loss_triggered
+
+    # Build response message (AC3)
+    equity_display = f"${total_equity:,.2f}"
+    old_equity_display = (
+        f"${old_daily_start_equity:,.2f}"
+        if old_daily_start_equity is not None
+        else "N/A"
+    )
+
+    # Determine next step guidance based on Kill-Switch status
+    if kill_switch_active:
+        next_step = (
+            "\n\n⚠️ *Kill\\-Switch 仍处于激活状态*\n"
+            "如需恢复交易，请发送 `/resume confirm`"
+        )
+    else:
+        next_step = "\n\n✅ 交易功能正常运行中。"
+
+    message = (
+        "🧮 *每日亏损基准已重置*\n\n"
+        f"*新起始权益:* `{equity_display}`\n"
+        f"*原起始权益:* `{old_equity_display}`\n"
+        f"*当前亏损:* `0\\.00%`\n"
+        f"*原亏损:* `{old_daily_loss_pct:.2f}%`\n"
+        f"*日亏触发标志:* `{old_daily_loss_triggered}` → `False`"
+        f"{next_step}"
+    )
+
+    # Log state change (AC4)
+    logging.info(
+        "Telegram /reset_daily: daily baseline reset | chat_id=%s | "
+        "old_equity=%s | new_equity=%.2f | old_loss_pct=%.2f%% | "
+        "old_triggered=%s | kill_switch_active=%s",
+        cmd.chat_id,
+        old_equity_display,
+        total_equity,
+        old_daily_loss_pct,
+        old_daily_loss_triggered,
+        kill_switch_active,
+    )
+
+    return CommandResult(
+        success=True,
+        message=message,
+        state_changed=True,
+        action="DAILY_BASELINE_RESET",
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════
+# HELP AND UNKNOWN COMMAND HANDLERS (Story 7.4.5)
+# ═══════════════════════════════════════════════════════════════════
+
+
+def handle_help_command(
+    cmd: TelegramCommand,
+    *,
+    risk_control_enabled: bool = True,
+) -> CommandResult:
+    """Handle the /help command to display available commands.
+
+    This function returns a structured help message listing all available
+    Telegram commands with their descriptions.
+
+    Args:
+        cmd: The TelegramCommand object for /help.
+        risk_control_enabled: Whether risk control is globally enabled.
+
+    Returns:
+        CommandResult with success status and help message.
+
+    References:
+        - AC1: /help 返回完整且可扩展的命令帮助列表
+    """
+    # Log command receipt
+    logging.info(
+        "Telegram /help command received: chat_id=%s, message_id=%d",
+        cmd.chat_id,
+        cmd.message_id,
+    )
+
+    message = _build_help_message(risk_control_enabled=risk_control_enabled)
+
+    return CommandResult(
+        success=True,
+        message=message,
+        state_changed=False,
+        action="HELP_DISPLAYED",
+    )
+
+
+def handle_unknown_command(
+    cmd: TelegramCommand,
+    *,
+    risk_control_enabled: bool = True,
+) -> CommandResult:
+    """Handle unknown commands by returning help information.
+
+    This function provides a fallback for unrecognized commands, returning
+    a friendly message with the available command list.
+
+    Args:
+        cmd: The TelegramCommand object for the unknown command.
+        risk_control_enabled: Whether risk control is globally enabled.
+
+    Returns:
+        CommandResult with success status and unknown command message.
+
+    References:
+        - AC3: 未知命令统一回退到帮助信息
+    """
+    # Log unknown command
+    logging.info(
+        "Telegram unknown command received: /%s | chat_id=%s, message_id=%d",
+        cmd.command,
+        cmd.chat_id,
+        cmd.message_id,
+    )
+
+    help_content = _build_help_message(risk_control_enabled=risk_control_enabled)
+    message = (
+        f"❓ *未知命令:* `/{_escape_markdown(cmd.command)}`\n\n"
+        f"{help_content}"
+    )
+
+    return CommandResult(
+        success=True,
+        message=message,
+        state_changed=False,
+        action="UNKNOWN_COMMAND",
+    )
+
+
 def create_kill_resume_handlers(
     state: "RiskControlState",
     *,
@@ -648,6 +1024,10 @@ def create_kill_resume_handlers(
     record_event_fn: Optional[Callable[[str, str], None]] = None,
     bot_token: str = "",
     chat_id: str = "",
+    total_equity_fn: Optional[Callable[[], Optional[float]]] = None,
+    risk_control_enabled: bool = True,
+    daily_loss_limit_enabled: bool = True,
+    daily_loss_limit_pct: float = 5.0,
 ) -> Dict[str, Callable[[TelegramCommand], None]]:
     """Create command handlers for /kill and /resume commands.
     
@@ -739,7 +1119,101 @@ def create_kill_resume_handlers(
             
             _record_event(result.action, detail)
     
-    return {
+    def status_handler(cmd: TelegramCommand) -> None:
+        """Handler for /status command."""
+        try:
+            positions_count = positions_count_fn() if positions_count_fn else 0
+            total_equity = total_equity_fn() if total_equity_fn is not None else None
+            result = handle_status_command(
+                cmd,
+                state,
+                total_equity=total_equity,
+                positions_count=positions_count,
+                risk_control_enabled=risk_control_enabled,
+                daily_loss_limit_enabled=daily_loss_limit_enabled,
+                daily_loss_limit_pct=daily_loss_limit_pct,
+            )
+        except Exception as exc:
+            logging.error("Error processing Telegram /status command: %s", exc)
+            fallback = "⚠️ *暂时无法获取风控状态，请稍后重试。*"
+            _send_response(fallback, cmd.chat_id)
+            return
+
+        _send_response(result.message, cmd.chat_id)
+
+        if result.action:
+            detail = f"status via Telegram | chat_id={cmd.chat_id}"
+            _record_event(result.action, detail)
+    
+    handlers: Dict[str, Callable[[TelegramCommand], None]] = {
         "kill": kill_handler,
         "resume": resume_handler,
     }
+
+    handlers["status"] = status_handler
+
+    def reset_daily_handler(cmd: TelegramCommand) -> None:
+        """Handler for /reset_daily command."""
+        try:
+            total_equity = total_equity_fn() if total_equity_fn is not None else None
+            result = handle_reset_daily_command(
+                cmd,
+                state,
+                total_equity=total_equity,
+                risk_control_enabled=risk_control_enabled,
+            )
+        except Exception as exc:
+            logging.error("Error processing Telegram /reset_daily command: %s", exc)
+            fallback = "⚠️ *暂时无法重置每日基准，请稍后重试。*"
+            _send_response(fallback, cmd.chat_id)
+            return
+
+        _send_response(result.message, cmd.chat_id)
+
+        if result.action:
+            detail = f"reset_daily via Telegram | chat_id={cmd.chat_id}"
+            if result.state_changed:
+                detail = (
+                    f"Daily baseline reset via Telegram /reset_daily | "
+                    f"chat_id={cmd.chat_id}"
+                )
+            _record_event(result.action, detail)
+
+    handlers["reset_daily"] = reset_daily_handler
+
+    def help_handler(cmd: TelegramCommand) -> None:
+        """Handler for /help command."""
+        try:
+            result = handle_help_command(
+                cmd,
+                risk_control_enabled=risk_control_enabled,
+            )
+        except Exception as exc:
+            logging.error("Error processing Telegram /help command: %s", exc)
+            fallback = "⚠️ *暂时无法获取帮助信息，请稍后重试。*"
+            _send_response(fallback, cmd.chat_id)
+            return
+
+        _send_response(result.message, cmd.chat_id)
+
+    handlers["help"] = help_handler
+
+    def unknown_handler(cmd: TelegramCommand) -> None:
+        """Handler for unknown commands."""
+        try:
+            result = handle_unknown_command(
+                cmd,
+                risk_control_enabled=risk_control_enabled,
+            )
+        except Exception as exc:
+            logging.error("Error processing Telegram unknown command: %s", exc)
+            fallback = "⚠️ *命令处理出错，请稍后重试。*"
+            _send_response(fallback, cmd.chat_id)
+            return
+
+        _send_response(result.message, cmd.chat_id)
+
+    # Store unknown handler for use in process_telegram_commands
+    handlers["__unknown__"] = unknown_handler
+
+    return handlers
