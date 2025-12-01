@@ -95,8 +95,12 @@ class RiskControlPersistenceIntegrationTests(TestCase):
             core_state.iteration_counter = 0
             core_state.risk_control_state = RiskControlState()
 
-            with mock.patch.object(core_state, "STATE_JSON", state_path):
-                core_state.load_state()
+            # Mock os.environ to ensure KILL_SWITCH is not set (isolate from .env)
+            import os
+            with mock.patch.dict("os.environ", {}, clear=False):
+                os.environ.pop("KILL_SWITCH", None)
+                with mock.patch.object(core_state, "STATE_JSON", state_path):
+                    core_state.load_state()
 
             self.assertEqual(core_state.balance, 9000.0)
             self.assertEqual(core_state.iteration_counter, 7)
@@ -326,8 +330,12 @@ class RiskControlStateRestartTests(TestCase):
             core_state.iteration_counter = 0
             core_state.risk_control_state = RiskControlState()
 
-            with mock.patch.object(core_state, "STATE_JSON", state_path):
-                core_state.load_state()
+            # Mock os.environ to ensure KILL_SWITCH is not set (isolate from .env)
+            import os
+            with mock.patch.dict("os.environ", {}, clear=False):
+                os.environ.pop("KILL_SWITCH", None)
+                with mock.patch.object(core_state, "STATE_JSON", state_path):
+                    core_state.load_state()
 
             # Verify kill switch state was restored
             self.assertTrue(core_state.risk_control_state.kill_switch_active)

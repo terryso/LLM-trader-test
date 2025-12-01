@@ -1129,7 +1129,7 @@ from notifications.telegram_commands import handle_status_command, handle_reset_
 
 
 class TestHandleStatusCommand:
-    """Tests for handle_status_command function (Story 7.4.3 /status)."""
+    """Tests for handle_status_command function (Bot profit/loss status)."""
 
     @pytest.fixture
     def base_command(self) -> TelegramCommand:
@@ -1140,6 +1140,107 @@ class TestHandleStatusCommand:
             chat_id="123456",
             message_id=100,
             raw_text="/status",
+        )
+
+    def test_status_returns_profit_snapshot(self, base_command: TelegramCommand):
+        """AC1: /status returns Bot profit/loss status with key fields."""
+        result = handle_status_command(
+            base_command,
+            balance=5000.0,
+            total_equity=9876.54,
+            total_margin=1000.0,
+            positions_count=3,
+            start_capital=10000.0,
+            sortino_ratio=1.5,
+            kill_switch_active=False,
+        )
+
+        assert isinstance(result, CommandResult)
+        assert result.success is True
+        assert result.state_changed is False
+        assert result.action == "BOT_STATUS"
+
+        msg = result.message
+        # 标题
+        assert "📊 *Bot 状态*" in msg
+        # 交易状态正常
+        assert "🟢 正常" in msg
+        # 余额与权益
+        assert "可用余额" in msg
+        assert "$5,000.00" in msg
+        assert "总权益" in msg
+        assert "$9,876.54" in msg
+        # 收益率
+        assert "-1.23%" in msg  # (9876.54 - 10000) / 10000 = -1.23%
+        # Sortino
+        assert "Sortino Ratio" in msg
+        assert "+1.50" in msg
+        # 持仓
+        assert "持仓数量" in msg
+        assert "3" in msg
+
+    def test_status_shows_margin_when_positive(self, base_command: TelegramCommand):
+        """AC2: /status shows margin allocated when > 0."""
+        result = handle_status_command(
+            base_command,
+            balance=5000.0,
+            total_equity=6500.0,
+            total_margin=1500.0,
+            positions_count=2,
+            start_capital=5000.0,
+            sortino_ratio=None,
+            kill_switch_active=False,
+        )
+
+        msg = result.message
+        assert "已用保证金" in msg
+        assert "$1,500.00" in msg
+
+    def test_status_hides_margin_when_zero(self, base_command: TelegramCommand):
+        """AC2: /status hides margin line when margin is 0."""
+        result = handle_status_command(
+            base_command,
+            balance=5000.0,
+            total_equity=5000.0,
+            total_margin=0.0,
+            positions_count=0,
+            start_capital=5000.0,
+            sortino_ratio=None,
+            kill_switch_active=False,
+        )
+
+        msg = result.message
+        assert "已用保证金" not in msg
+
+    def test_status_shows_kill_switch_paused(self, base_command: TelegramCommand):
+        """AC3: /status shows trading paused when kill switch is active."""
+        result = handle_status_command(
+            base_command,
+            balance=5000.0,
+            total_equity=4500.0,
+            total_margin=0.0,
+            positions_count=0,
+            start_capital=5000.0,
+            sortino_ratio=-2.0,
+            kill_switch_active=True,
+        )
+
+        msg = result.message
+        assert "🔴 已暂停" in msg
+
+
+class TestHandleRiskCommand:
+    """Tests for handle_risk_command function (risk control status)."""
+
+    @pytest.fixture
+    def base_command(self) -> TelegramCommand:
+        """Create a sample /risk command."""
+        return TelegramCommand(
+            command="risk",
+            args=[],
+            chat_id="123456",
+            message_id=100,
+            raw_text="/risk",
         )
 
     @pytest.fixture
@@ -1168,13 +1269,14 @@ class TestHandleStatusCommand:
             daily_loss_triggered=True,
         )
 
-    def test_status_returns_snapshot_markdown(
+    def test_risk_returns_snapshot_markdown(
         self,
         base_command: TelegramCommand,
         normal_state: RiskControlState,
     ):
-        """AC1/AC2: /status returns structured Markdown snapshot with key fields."""
-        result = handle_status_command(
+        """AC1/AC2: /risk returns structured Markdown snapshot with key fields."""
+        from notifications.telegram_commands import handle_risk_command
+        result = handle_risk_command(
             base_command,
             normal_state,
             total_equity=9876.54,
@@ -1191,7 +1293,7 @@ class TestHandleStatusCommand:
 
         msg = result.message
         # 标题与基础结构
-        assert "📊 *风控状态*" in msg
+        assert "🛡 *风控状态*" in msg
         assert "Kill\\-Switch" in msg
         # Kill-Switch 未激活时应显示绿色状态
         assert "🟢 已关闭" in msg
@@ -1202,16 +1304,15 @@ class TestHandleStatusCommand:
         assert "\\-5.00%" in msg
         assert "今日起始权益:" in msg
         assert "当前权益:" in msg
-        assert "当前持仓数量:" in msg
-        assert "3" in msg
 
-    def test_status_high_risk_flags_display(
+    def test_risk_high_risk_flags_display(
         self,
         base_command: TelegramCommand,
         high_risk_state: RiskControlState,
     ):
         """AC1/AC2: 高风险状态下应显示 Kill-Switch 与日亏限制标记。"""
-        result = handle_status_command(
+        from notifications.telegram_commands import handle_risk_command
+        result = handle_risk_command(
             base_command,
             high_risk_state,
             total_equity=8000.0,
@@ -1223,19 +1324,20 @@ class TestHandleStatusCommand:
 
         msg = result.message
         # Kill-Switch 激活文案
-        assert "Kill\\-Switch:* 🔴 已暂停" in msg
+        assert "Kill\\-Switch:* 🔴 已激活" in msg
         assert "Daily loss limit reached" in msg or "Daily loss limit" in msg
         # 风险标记
         assert "🔴 Kill\\-Switch 已激活" in msg
         assert "⚠️ 日亏限制已触发" in msg
 
-    def test_status_risk_control_disabled_message(
+    def test_risk_control_disabled_message(
         self,
         base_command: TelegramCommand,
         normal_state: RiskControlState,
     ):
         """AC2/AC3: 风控关闭时返回降级提示，不展示误导性数值。"""
-        result = handle_status_command(
+        from notifications.telegram_commands import handle_risk_command
+        result = handle_risk_command(
             base_command,
             normal_state,
             total_equity=None,
@@ -1246,7 +1348,7 @@ class TestHandleStatusCommand:
         )
 
         msg = result.message
-        assert "风控系统未启用或状态不可用" in msg
+        assert "风控系统未启用" in msg
         # 不应包含阈值与权益等细节字段
         assert "亏损阈值" not in msg
 
@@ -1282,6 +1384,10 @@ class TestStatusHandlerIntegration:
             bot_token="dummy",
             chat_id="123456",
             total_equity_fn=lambda: 9500.0,
+            balance_fn=lambda: 5000.0,
+            total_margin_fn=lambda: 500.0,
+            start_capital=10000.0,
+            sortino_ratio_fn=lambda: 1.2,
             risk_control_enabled=True,
             daily_loss_limit_enabled=True,
             daily_loss_limit_pct=5.0,
@@ -1300,9 +1406,59 @@ class TestStatusHandlerIntegration:
 
         # 发送了 MarkdownV2 文本
         assert sent["parse_mode"] == "MarkdownV2"
-        assert "📊 *风控状态*" in sent["text"]
+        assert "📊 *Bot 状态*" in sent["text"]
         # 记录了审计事件
-        assert ("RISK_CONTROL_STATUS", "status via Telegram | chat_id=123456") in events
+        assert ("BOT_STATUS", "status via Telegram | chat_id=123456") in events
+
+    def test_risk_handler_sends_message_and_records_event(self, caplog):
+        """AC3/AC4: /risk 通过工厂集成，发送消息并记录审计事件。"""
+        state = RiskControlState(
+            kill_switch_active=False,
+            daily_start_equity=10000.0,
+            daily_start_date="2025-11-30",
+            daily_loss_pct=-2.0,
+            daily_loss_triggered=False,
+        )
+
+        sent: Dict[str, Any] = {}
+        events = []
+
+        def fake_send(text: str, parse_mode: str) -> None:
+            sent["text"] = text
+            sent["parse_mode"] = parse_mode
+
+        def fake_record(action: str, detail: str) -> None:
+            events.append((action, detail))
+
+        handlers = create_kill_resume_handlers(
+            state,
+            positions_count_fn=lambda: 2,
+            send_fn=fake_send,
+            record_event_fn=fake_record,
+            bot_token="dummy",
+            chat_id="123456",
+            total_equity_fn=lambda: 9500.0,
+            risk_control_enabled=True,
+            daily_loss_limit_enabled=True,
+            daily_loss_limit_pct=5.0,
+        )
+
+        cmd = TelegramCommand(
+            command="risk",
+            args=[],
+            chat_id="123456",
+            message_id=200,
+            raw_text="/risk",
+        )
+
+        with caplog.at_level(logging.INFO):
+            handlers["risk"](cmd)
+
+        # 发送了 MarkdownV2 文本
+        assert sent["parse_mode"] == "MarkdownV2"
+        assert "🛡 *风控状态*" in sent["text"]
+        # 记录了审计事件
+        assert ("RISK_CONTROL_STATUS", "risk via Telegram | chat_id=123456") in events
 
 
 # ═══════════════════════════════════════════════════════════════════

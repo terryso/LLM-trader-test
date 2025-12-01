@@ -543,13 +543,17 @@ class ApplyKillSwitchEnvOverrideNotificationTests(TestCase):
         mock_deactivate = mock.MagicMock()
         state = RiskControlState(kill_switch_active=True)
 
-        new_state, overridden = apply_kill_switch_env_override(
-            state,
-            kill_switch_env=None,
-            positions_count=0,
-            activate_notify_fn=mock_activate,
-            deactivate_notify_fn=mock_deactivate,
-        )
+        # Mock os.environ to ensure KILL_SWITCH is not set (isolate from .env)
+        import os
+        with mock.patch.dict("os.environ", {}, clear=False):
+            os.environ.pop("KILL_SWITCH", None)
+            new_state, overridden = apply_kill_switch_env_override(
+                state,
+                kill_switch_env=None,
+                positions_count=0,
+                activate_notify_fn=mock_activate,
+                deactivate_notify_fn=mock_deactivate,
+            )
 
         self.assertTrue(new_state.kill_switch_active)
         self.assertFalse(overridden)

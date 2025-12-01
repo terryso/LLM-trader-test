@@ -374,9 +374,10 @@ def process_telegram_commands(
 # Each entry: (command, description)
 # This allows easy extension when new commands are added
 COMMAND_REGISTRY: list[tuple[str, str]] = [
+    ("/status", "查看 Bot 资金与盈利状态"),
+    ("/risk", "查看风控配置与状态"),
     ("/kill", "激活 Kill\\-Switch，暂停所有新开仓"),
     ("/resume confirm", "解除 Kill\\-Switch（需二次确认）"),
-    ("/status", "查看当前风控状态与每日亏损信息"),
     ("/reset\\_daily", "手动重置每日亏损基准"),
     ("/help", "显示此帮助信息"),
 ]
@@ -687,6 +688,103 @@ def _escape_markdown(text: str) -> str:
 
 def handle_status_command(
     cmd: TelegramCommand,
+    *,
+    balance: float,
+    total_equity: Optional[float],
+    total_margin: float,
+    positions_count: int,
+    start_capital: float,
+    sortino_ratio: Optional[float],
+    kill_switch_active: bool = False,
+) -> CommandResult:
+    """Handle the /status command to show Bot profit/loss status.
+    
+    This command displays the current financial status of the bot,
+    similar to the PORTFOLIO SUMMARY shown in the terminal.
+    
+    Args:
+        cmd: The TelegramCommand object for /status.
+        balance: Current available balance.
+        total_equity: Current total equity.
+        total_margin: Total margin allocated to positions.
+        positions_count: Number of open positions.
+        start_capital: Starting capital for return calculation.
+        sortino_ratio: Current Sortino ratio (or None if unavailable).
+        kill_switch_active: Whether Kill-Switch is active (for status indicator).
+    
+    Returns:
+        CommandResult with success status and response message.
+    """
+    logging.info(
+        "Telegram /status command received: chat_id=%s, message_id=%d",
+        cmd.chat_id,
+        cmd.message_id,
+    )
+
+    # Calculate return percentage
+    if total_equity is None or total_equity != total_equity:
+        equity_display = "N/A"
+        return_pct_display = "N/A"
+        unrealized_pnl_display = "N/A"
+    else:
+        equity_display = f"${total_equity:,.2f}"
+        if start_capital > 0:
+            return_pct = ((total_equity - start_capital) / start_capital) * 100
+            return_pct_display = f"{return_pct:+.2f}%"
+        else:
+            return_pct_display = "N/A"
+        # Unrealized PnL = Total Equity - Balance - Margin
+        unrealized_pnl = total_equity - balance - total_margin
+        unrealized_pnl_display = f"${unrealized_pnl:+,.2f}"
+
+    # Sortino ratio display
+    if sortino_ratio is not None:
+        sortino_display = f"{sortino_ratio:+.2f}"
+    else:
+        sortino_display = "N/A"
+
+    # Trading status indicator
+    if kill_switch_active:
+        trading_status = "🔴 已暂停"
+    else:
+        trading_status = "🟢 正常"
+
+    message = (
+        "📊 *Bot 状态*\n\n"
+        f"*交易状态:* {trading_status}\n"
+        f"*可用余额:* `${balance:,.2f}`\n"
+    )
+    
+    if total_margin > 0:
+        message += f"*已用保证金:* `${total_margin:,.2f}`\n"
+    
+    message += (
+        f"*总权益:* `{equity_display} ({return_pct_display})`\n"
+        f"*未实现盈亏:* `{unrealized_pnl_display}`\n"
+        f"*Sortino Ratio:* `{sortino_display}`\n"
+        f"*持仓数量:* {positions_count}"
+    )
+
+    logging.info(
+        "Telegram /status snapshot | chat_id=%s | balance=%.2f | equity=%s | "
+        "positions=%d | sortino=%s",
+        cmd.chat_id,
+        balance,
+        equity_display,
+        positions_count,
+        sortino_display,
+    )
+
+    return CommandResult(
+        success=True,
+        message=message,
+        state_changed=False,
+        action="BOT_STATUS",
+    )
+
+
+def handle_risk_command(
+    cmd: TelegramCommand,
     state: "RiskControlState",
     *,
     total_equity: Optional[float],
@@ -695,17 +793,34 @@ def handle_status_command(
     daily_loss_limit_enabled: bool,
     daily_loss_limit_pct: float,
 ) -> CommandResult:
+    """Handle the /risk command to show risk control status.
+    
+    This command displays the current risk control configuration and state,
+    including Kill-Switch status and daily loss limit information.
+    
+    Args:
+        cmd: The TelegramCommand object for /risk.
+        state: The current RiskControlState.
+        total_equity: Current total equity.
+        positions_count: Number of open positions.
+        risk_control_enabled: Whether risk control is enabled.
+        daily_loss_limit_enabled: Whether daily loss limit is enabled.
+        daily_loss_limit_pct: Daily loss limit percentage threshold.
+    
+    Returns:
+        CommandResult with success status and response message.
+    """
     logging.info(
-        "Telegram /status command received: chat_id=%s, message_id=%d",
+        "Telegram /risk command received: chat_id=%s, message_id=%d",
         cmd.chat_id,
         cmd.message_id,
     )
 
     if not risk_control_enabled:
         message = (
-            "📊 *风控状态*\n\n"
-            "⚠️ 风控系统未启用或状态不可用。\n"
-            "请检查 RISK_CONTROL_ENABLED 配置。"
+            "🛡 *风控状态*\n\n"
+            "⚠️ 风控系统未启用。\n"
+            "请检查 `RISK_CONTROL_ENABLED` 配置。"
         )
         return CommandResult(
             success=True,
@@ -731,7 +846,7 @@ def handle_status_command(
 
     kill_status = "🟢 已关闭"
     if kill_active:
-        kill_status = "🔴 已暂停"
+        kill_status = "🔴 已激活"
 
     risk_flags = []
     if kill_active:
@@ -748,22 +863,21 @@ def handle_status_command(
     triggered_at = state.kill_switch_triggered_at or "N/A"
 
     message = (
-        "📊 *风控状态*\n\n"
+        "🛡 *风控状态*\n\n"
         f"*Kill\\-Switch:* {kill_status}\n"
-        f"*原因:* {_escape_markdown(reason)}\n"
-        f"*触发时间:* `{triggered_at}`\n"
+        f"*触发原因:* {_escape_markdown(reason)}\n"
+        f"*触发时间:* `{triggered_at}`\n\n"
         f"*当日亏损:* `{loss_pct_display}`\n"
         f"*亏损阈值:* `{limit_pct_display}`\n"
         f"*今日起始权益:* `{start_equity_display}`\n"
-        f"*当前权益:* `{equity_display}`\n"
-        f"*当前持仓数量:* {positions_count}\n"
-        f"*风控开关:* {'启用' if risk_control_enabled else '关闭'}\n"
-        f"*每日亏损限制:* {'启用' if daily_loss_limit_enabled else '关闭'}"
+        f"*当前权益:* `{equity_display}`\n\n"
+        f"*风控开关:* {'✅ 启用' if risk_control_enabled else '❌ 关闭'}\n"
+        f"*每日亏损限制:* {'✅ 启用' if daily_loss_limit_enabled else '❌ 关闭'}"
         f"{flags_line}"
     )
 
     logging.info(
-        "Telegram /status snapshot | chat_id=%s | kill_switch_active=%s | "
+        "Telegram /risk snapshot | chat_id=%s | kill_switch_active=%s | "
         "daily_loss_pct=%.2f | daily_loss_triggered=%s | equity=%s | positions=%d",
         cmd.chat_id,
         kill_active,
@@ -1025,11 +1139,15 @@ def create_kill_resume_handlers(
     bot_token: str = "",
     chat_id: str = "",
     total_equity_fn: Optional[Callable[[], Optional[float]]] = None,
+    balance_fn: Optional[Callable[[], float]] = None,
+    total_margin_fn: Optional[Callable[[], float]] = None,
+    start_capital: float = 0.0,
+    sortino_ratio_fn: Optional[Callable[[], Optional[float]]] = None,
     risk_control_enabled: bool = True,
     daily_loss_limit_enabled: bool = True,
     daily_loss_limit_pct: float = 5.0,
 ) -> Dict[str, Callable[[TelegramCommand], None]]:
-    """Create command handlers for /kill and /resume commands.
+    """Create command handlers for Telegram commands.
     
     This factory function creates properly configured handlers that can be
     passed to process_telegram_commands.
@@ -1043,6 +1161,14 @@ def create_kill_resume_handlers(
             Signature: record_event_fn(action, detail).
         bot_token: Telegram bot token for sending responses.
         chat_id: Telegram chat ID for sending responses.
+        total_equity_fn: Function to get current total equity.
+        balance_fn: Function to get current available balance.
+        total_margin_fn: Function to get total margin allocated.
+        start_capital: Starting capital for return calculation.
+        sortino_ratio_fn: Function to get current Sortino ratio.
+        risk_control_enabled: Whether risk control is enabled.
+        daily_loss_limit_enabled: Whether daily loss limit is enabled.
+        daily_loss_limit_pct: Daily loss limit percentage threshold.
     
     Returns:
         Dict mapping command names to handler functions.
@@ -1120,11 +1246,41 @@ def create_kill_resume_handlers(
             _record_event(result.action, detail)
     
     def status_handler(cmd: TelegramCommand) -> None:
-        """Handler for /status command."""
+        """Handler for /status command (Bot profit/loss status)."""
         try:
             positions_count = positions_count_fn() if positions_count_fn else 0
             total_equity = total_equity_fn() if total_equity_fn is not None else None
+            current_balance = balance_fn() if balance_fn is not None else 0.0
+            current_margin = total_margin_fn() if total_margin_fn is not None else 0.0
+            sortino = sortino_ratio_fn() if sortino_ratio_fn is not None else None
             result = handle_status_command(
+                cmd,
+                balance=current_balance,
+                total_equity=total_equity,
+                total_margin=current_margin,
+                positions_count=positions_count,
+                start_capital=start_capital,
+                sortino_ratio=sortino,
+                kill_switch_active=state.kill_switch_active,
+            )
+        except Exception as exc:
+            logging.error("Error processing Telegram /status command: %s", exc)
+            fallback = "⚠️ *暂时无法获取 Bot 状态，请稍后重试。*"
+            _send_response(fallback, cmd.chat_id)
+            return
+
+        _send_response(result.message, cmd.chat_id)
+
+        if result.action:
+            detail = f"status via Telegram | chat_id={cmd.chat_id}"
+            _record_event(result.action, detail)
+
+    def risk_handler(cmd: TelegramCommand) -> None:
+        """Handler for /risk command (risk control status)."""
+        try:
+            positions_count = positions_count_fn() if positions_count_fn else 0
+            total_equity = total_equity_fn() if total_equity_fn is not None else None
+            result = handle_risk_command(
                 cmd,
                 state,
                 total_equity=total_equity,
@@ -1134,7 +1290,7 @@ def create_kill_resume_handlers(
                 daily_loss_limit_pct=daily_loss_limit_pct,
             )
         except Exception as exc:
-            logging.error("Error processing Telegram /status command: %s", exc)
+            logging.error("Error processing Telegram /risk command: %s", exc)
             fallback = "⚠️ *暂时无法获取风控状态，请稍后重试。*"
             _send_response(fallback, cmd.chat_id)
             return
@@ -1142,7 +1298,7 @@ def create_kill_resume_handlers(
         _send_response(result.message, cmd.chat_id)
 
         if result.action:
-            detail = f"status via Telegram | chat_id={cmd.chat_id}"
+            detail = f"risk via Telegram | chat_id={cmd.chat_id}"
             _record_event(result.action, detail)
     
     handlers: Dict[str, Callable[[TelegramCommand], None]] = {
@@ -1151,6 +1307,7 @@ def create_kill_resume_handlers(
     }
 
     handlers["status"] = status_handler
+    handlers["risk"] = risk_handler
 
     def reset_daily_handler(cmd: TelegramCommand) -> None:
         """Handler for /reset_daily command."""

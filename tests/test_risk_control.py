@@ -413,7 +413,12 @@ class TestApplyKillSwitchEnvOverride:
             kill_switch_triggered_at="2025-11-30T08:00:00+00:00",
         )
 
-        new_state, overridden = apply_kill_switch_env_override(state, kill_switch_env=None)
+        # Mock os.environ to ensure KILL_SWITCH is not set (isolate from .env)
+        with mock.patch.dict("os.environ", {}, clear=False):
+            # Remove KILL_SWITCH if it exists in the patched environ
+            import os
+            os.environ.pop("KILL_SWITCH", None)
+            new_state, overridden = apply_kill_switch_env_override(state, kill_switch_env=None)
 
         assert new_state.kill_switch_active is True
         assert new_state.kill_switch_reason == "persisted:reason"

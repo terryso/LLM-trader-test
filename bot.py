@@ -15,6 +15,7 @@ Refactored Architecture:
 """
 from __future__ import annotations
 
+import threading
 import time
 import logging
 import math
@@ -46,6 +47,7 @@ from config.settings import (
     DEFAULT_TRADING_RULES_PROMPT, DEFAULT_LLM_MODEL,
     TRADING_BACKEND, BINANCE_FUTURES_LIVE, BACKPACK_FUTURES_LIVE,
     RISK_CONTROL_ENABLED, DAILY_LOSS_LIMIT_ENABLED, DAILY_LOSS_LIMIT_PCT,
+    RISK_FREE_RATE,
 )
 
 
@@ -265,7 +267,7 @@ def poll_telegram_commands() -> None:
                 "Telegram commands received: %d command(s)",
                 len(commands),
             )
-            # Create command handlers for /kill and /resume (Story 7.4.2)
+            # Create command handlers for Telegram commands
             command_handlers = create_kill_resume_handlers(
                 state=_core_state.risk_control_state,
                 positions_count_fn=lambda: len(positions),
@@ -273,6 +275,10 @@ def poll_telegram_commands() -> None:
                 bot_token=TELEGRAM_BOT_TOKEN,
                 chat_id=TELEGRAM_CHAT_ID,
                 total_equity_fn=calculate_total_equity,
+                balance_fn=lambda: balance,
+                total_margin_fn=calculate_total_margin,
+                start_capital=START_CAPITAL,
+                sortino_ratio_fn=lambda: calculate_sortino_ratio(equity_history, CHECK_INTERVAL, RISK_FREE_RATE),
                 risk_control_enabled=RISK_CONTROL_ENABLED,
                 daily_loss_limit_enabled=DAILY_LOSS_LIMIT_ENABLED,
                 daily_loss_limit_pct=DAILY_LOSS_LIMIT_PCT,
@@ -285,6 +291,77 @@ def poll_telegram_commands() -> None:
             "Unexpected error in Telegram command polling: %s",
             exc,
         )
+
+
+# ───────────────────────── TELEGRAM COMMAND THREAD ─────────────────────────
+# Polling interval for the dedicated Telegram command thread (in seconds).
+# This is independent of the main trading loop's CHECK_INTERVAL.
+TELEGRAM_COMMAND_POLL_INTERVAL = 3
+
+
+def _telegram_command_loop() -> None:
+    """Background thread loop for polling Telegram commands.
+    
+    This thread runs independently of the main trading loop, polling for
+    Telegram commands at a shorter interval (TELEGRAM_COMMAND_POLL_INTERVAL).
+    This allows commands like /status, /kill, /resume to be processed
+    within seconds, regardless of the main trading loop's CHECK_INTERVAL.
+    
+    The thread shares state with the main loop (risk_control_state, positions,
+    balance) since it runs in the same process. All state modifications are
+    done through the same functions used by the main loop.
+    
+    Error handling:
+        - All exceptions are caught and logged to prevent thread termination
+        - Network/API errors are logged but the thread continues running
+        - The thread is a daemon thread, so it will exit when the main process exits
+    """
+    logging.info(
+        "Telegram command thread started (poll interval: %ds)",
+        TELEGRAM_COMMAND_POLL_INTERVAL,
+    )
+    
+    handler = get_telegram_command_handler()
+    if handler is None:
+        logging.info("Telegram command thread exiting: not configured")
+        return
+    
+    while True:
+        try:
+            commands = handler.poll_commands()
+            if commands:
+                logging.info(
+                    "Telegram commands received: %d command(s)",
+                    len(commands),
+                )
+                # Create command handlers with current state
+                command_handlers = create_kill_resume_handlers(
+                    state=_core_state.risk_control_state,
+                    positions_count_fn=lambda: len(positions),
+                    record_event_fn=log_risk_control_event,
+                    bot_token=TELEGRAM_BOT_TOKEN,
+                    chat_id=TELEGRAM_CHAT_ID,
+                    total_equity_fn=calculate_total_equity,
+                    balance_fn=lambda: balance,
+                    total_margin_fn=calculate_total_margin,
+                    start_capital=START_CAPITAL,
+                    sortino_ratio_fn=lambda: calculate_sortino_ratio(equity_history, CHECK_INTERVAL, RISK_FREE_RATE),
+                    risk_control_enabled=RISK_CONTROL_ENABLED,
+                    daily_loss_limit_enabled=DAILY_LOSS_LIMIT_ENABLED,
+                    daily_loss_limit_pct=DAILY_LOSS_LIMIT_PCT,
+                )
+                # Process commands with handlers
+                process_telegram_commands(commands, command_handlers=command_handlers)
+                # Save state after command processing to persist any changes
+                save_state()
+        except Exception as exc:
+            # Catch all exceptions to prevent thread termination
+            logging.error(
+                "Error in Telegram command thread: %s",
+                exc,
+            )
+        
+        time.sleep(TELEGRAM_COMMAND_POLL_INTERVAL)
 
 
 def fetch_market_data(symbol: str) -> Optional[Dict[str, Any]]:
@@ -683,6 +760,18 @@ def main() -> None:
         _core_state.risk_control_state.daily_loss_pct,
     )
     
+    # Start dedicated Telegram command polling thread
+    # This thread polls for commands every TELEGRAM_COMMAND_POLL_INTERVAL seconds,
+    # independent of the main trading loop's CHECK_INTERVAL.
+    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        telegram_thread = threading.Thread(
+            target=_telegram_command_loop,
+            name="TelegramCommandThread",
+            daemon=True,  # Thread will exit when main process exits
+        )
+        telegram_thread.start()
+        logging.info("Telegram command thread started (poll interval: %ds)", TELEGRAM_COMMAND_POLL_INTERVAL)
+    
     while True:
         try:
             _run_iteration()
@@ -714,9 +803,9 @@ def _run_iteration() -> None:
     print(f"{Fore.CYAN}Iteration {iteration} - {get_current_time().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{Fore.CYAN}{'='*20}\n")
     
-    # Poll Telegram commands (before risk control check)
-    # Story 7.4.1: Infrastructure only - actual handlers added in 7.4.2-7.4.5
-    poll_telegram_commands()
+    # Note: Telegram command polling is now handled by a dedicated background thread
+    # (_telegram_command_loop) which polls every TELEGRAM_COMMAND_POLL_INTERVAL seconds.
+    # This allows commands to be processed within seconds, independent of CHECK_INTERVAL.
     
     # Risk control check (before market data and LLM calls)
     # Returns False if Kill-Switch is active (entry trades should be blocked)
@@ -760,18 +849,14 @@ def _run_iteration() -> None:
             kill_switch_reason=_core_state.risk_control_state.kill_switch_reason,
         )
     
-    # Display summary
+    # Display summary (terminal only, no Telegram push)
+    # Users can query status via /status command instead
     _display_portfolio_summary(
         positions, balance, equity_history, calculate_total_equity,
         lambda: calculate_total_margin_for_positions(positions.values()),
         lambda eq: equity_history.append(eq) if eq and math.isfinite(eq) else None,
-        record_iteration_message,
+        lambda msg: None,  # Don't record for Telegram push
     )
-    
-    # Send to Telegram
-    messages = get_iteration_messages()
-    if messages:
-        send_telegram_message("\n".join(messages), parse_mode=None)
     
     # Log and save
     _log_portfolio_state(
