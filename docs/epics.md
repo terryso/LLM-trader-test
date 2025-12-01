@@ -13,7 +13,7 @@
 
 - Epic 1：支持通过统一的 OpenAI 协议客户端访问任意兼容的 LLM 提供商（包括 OpenRouter、官方 OpenAI、自建 OpenAI-compatible 网关等）。
 - Epic 6：统一交易所执行层 & 多交易所可插拔支持（在不同交易所 backend 间保持一致的实盘执行体验）。
-
+- Epic 8：通过 Telegram 远程运营配置管理（允许授权用户在不重启的前提下远程调整关键运行参数，如 TRADING_BACKEND、MARKET_DATA_BACKEND、TRADEBOT_INTERVAL 和 TRADEBOT_LLM_TEMPERATURE）。
 > 说明：本文件是活文档，后续可以继续追加更多 Epic 与对应 User Stories。
 
 ---
@@ -25,6 +25,12 @@
 
 - **FR13：统一交易所执行抽象层（Exchange Execution Layer）**  
   系统应提供一层与具体交易所无关的实盘执行抽象，使 Bot 在开仓、平仓、附带 SL/TP、错误反馈等行为上，对 Binance、Hyperliquid 以及未来新增交易所保持一致的用户体验。
+
+- **FR-OPS1：运行时运营配置管理（Telegram 调参）**  
+  系统应支持通过安全的 Telegram 命令在 Bot 运行时调整一组白名单内的关键配置项（交易后端、行情后端、交易 interval、LLM temperature），无需修改文件或重启进程，并具备权限校验与日志审计能力。
+
+- **FR-OPS2：可配置交易对 Universe & Telegram 管理**  
+  系统应支持将可交易的合约/币对清单从代码中解耦出来，通过配置与 Telegram 命令进行管理，只影响 Paper / Live 模式的交易 Universe；新增交易对时需通过当前 `MARKET_DATA_BACKEND` 所在交易所/数据源校验其合法性，删除交易对仅阻止后续新开仓而不会强制平掉已有持仓。
 
 ---
 
@@ -265,7 +271,7 @@ So that switching or adding exchanges is predictable and low-risk.
 
 2. **在 `.env.example` 中补充该 backend 所需环境变量**
    - 至少包括：
-     - 一个显式的 live 开关（例如 `MY_EXCHANGE_LIVE_TRADING=false`）。
+     - 一个显式的 live 开关（例如 `MY_EXCHANGE_LIVE=true`）。
      - 访问该交易所所需的 API Key / Secret / 资金规模等字段。
    - 用简短注释说明：
      - 默认行为（建议保持 `false` / 纸上交易）。
@@ -309,16 +315,268 @@ So that switching or adding exchanges is predictable and low-risk.
 
 | FR ID  | Epic                                      | Stories             |
 |-------|-------------------------------------------|---------------------|
-| FR-L1 | Epic 1: 支持任意 OpenAI 协议兼容 LLM 提供商 | Story 1.1（初始版） |
-| FR13  | Epic 6: 统一交易所执行层 & 多交易所可插拔支持 | Story 6.1–6.5       |
+| FR-L1   | Epic 1: 支持任意 OpenAI 协议兼容 LLM 提供商                    | Story 1.1（初始版）   |
+| FR13    | Epic 6: 统一交易所执行层 & 多交易所可插拔支持                  | Story 6.1–6.5         |
+| FR-OPS1 | Epic 8: Telegram 远程运营配置管理（Runtime Config Control）    | Story 8.1–8.4         |
+| FR-OPS2 | Epic 9: 可配置交易对 Universe & Telegram 管理                  | Story 9.1–9.4         |
+
+---
+
+## Epic 8: Telegram 远程运营配置管理（Runtime Config Control）
+
+### Epic 8 概述
+
+**背景 / 问题**
+
+- 当前更改 `TRADING_BACKEND`、`MARKET_DATA_BACKEND`、`TRADEBOT_INTERVAL`、`TRADEBOT_LLM_TEMPERATURE` 等关键运行参数，需要修改 `.env` 并重启进程，运维成本较高且不利于快速响应市场与策略变化。
+- 缺乏一个安全、可审计的远程运维通道，无法在发现策略异常或市场极端波动时，快速降低风险或调整运行参数。
+
+**目标**
+
+- 提供一个基于 Telegram Bot 的 `/config` 命令集，让**授权管理员账号**可以在 Bot 运行时，对一组受控白名单配置项进行调整。
+- 修改仅影响当前运行进程的**运行时配置**（runtime overrides），从下一轮交易循环开始生效，不写回 `.env` 文件。
+- 所有配置变更均具备权限校验与日志记录能力，便于事后审计和回溯。
+
+**范围（In Scope）**
+
+- 在 Telegram 层新增 `/config` 命令，支持：
+  - `/config list`：列出当前支持远程修改的配置项（key）及其当前生效值。
+  - `/config get <KEY>`：展示指定 key 的当前值与合法取值范围/枚举说明。
+  - `/config set <KEY> <VALUE>`：仅限管理员账号，修改指定 key 的运行时配置值。
+- 支持的配置项白名单：
+  - `TRADING_BACKEND`
+  - `MARKET_DATA_BACKEND`
+  - `TRADEBOT_INTERVAL`
+  - `TRADEBOT_LLM_TEMPERATURE`
+- 在配置层增加一层「运行时覆盖」机制（runtime overrides），读取配置时优先使用 overrides，其次回退到 `.env` / 默认值，保证后续扩展更多可远程调参项的能力。
+
+**非范围（Out of Scope）**
+
+- 不修改 `.env` 文件内容，不提供配置版本管理或回滚功能。
+- 不支持一次性批量提交多个配置变更（本 Epic 仅支持逐项 set）。
+- 不在本 Epic 内引入复杂多角色权限模型，仅支持单一管理员 user_id。
+
+**验收标准（Done Criteria）**
+
+1. 在运行中的 Bot 中，通过 Telegram：
+   - `/config list` 能返回 4 个白名单 key 及其当前生效值；
+   - `/config get <KEY>` 对合法/非法 key 的反馈与文档一致（非法 key 会列出支持的 key 列表）。
+2. 仅管理员 Telegram user_id 可以成功调用 `/config set <KEY> <VALUE>`，非管理员调用时收到明确的「无权限修改，只能查看」提示。
+3. 对每个白名单配置项，输入非法取值时，均会返回包含合法取值范围/枚举的错误提示：
+   - `TRADING_BACKEND` / `MARKET_DATA_BACKEND`：仅接受代码中声明的 backend 枚举值；
+   - `TRADEBOT_INTERVAL`：仅接受 `3m`、`5m`、`15m`、`30m`、`1h`、`4h`；
+   - `TRADEBOT_LLM_TEMPERATURE`：仅接受 `[0.0, 1.0]` 区间内的小数，解析为 float。
+4. 在不重启进程的前提下，修改上述配置后：
+   - 下一轮交易循环（或下一次使用相关配置时）实际采用新的运行时值；
+   - 重启进程后配置回到 `.env` 中的原始值。
+5. 每一次成功的 `/config set` 调用，都在日志中留下完整记录，包括：
+   - 时间戳、Telegram user_id；
+   - 配置项 key、old_value、new_value；
+   - 便于后续审计和问题排查。
+
+---
+
+## Epic 9: 可配置交易对 Universe & Telegram 管理
+
+### Epic 9 概述
+
+**背景 / 问题**
+
+- 当前可交易合约列表（如 `SYMBOLS = ["ETHUSDT", "SOLUSDT", ...]`）写死在代码中，调整交易 Universe 需要改代码和重新部署，运维开销大且不利于根据市场快速调整关注资产。
+- 现有 Bot 在 Paper / Live 模式下都依赖这一硬编码列表，缺乏一个统一的、可配置且可通过 Telegram 远程调整的交易对管理机制。
+
+**目标**
+
+- 将 Paper / Live 模式下的交易 Universe 从代码中抽离为可配置集合，并提供 Telegram 命令对其进行查询、增删与校验。
+- 新增交易对时，基于当前 `MARKET_DATA_BACKEND` 对应的市场数据/交易所接口校验 symbol 是否被支持：
+  - 对 Backpack backend 使用 USDC 计价规范（例如 `xxxUSDC`）；
+  - 对其它 backend 默认使用 USDT 计价规范（例如 `xxxUSDT`）。
+- 删除交易对时，只阻止后续新开仓，不强制平掉已有持仓，避免引入复杂和平仓策略耦合。
+
+**范围（In Scope）**
+
+- 为 Paper / Live 模式引入一个「可配置交易 Universe」层，用于替代当前硬编码 `SYMBOLS`，但暂不改变回测（Backtest）的 symbol 配置方式。
+- 在 Telegram Bot 中新增 `/symbols` 命令，支持：
+  - `/symbols list`：查看当前 Paper / Live 交易 Universe；
+  - `/symbols add <SYMBOL>`：尝试向 Universe 中添加一个新 symbol；
+  - `/symbols remove <SYMBOL>`：从 Universe 中移除一个 symbol（仅影响未来的新开仓）。
+- 新增 symbol 时：
+  - 基于当前 `MARKET_DATA_BACKEND` 所对应的数据/交易所客户端校验 symbol 是否有效；
+  - 若不支持，则返回错误并拒绝添加。
+- 删除 symbol 时：
+  - 若当前有持仓，则不触发强制平仓，仅确保后续不会再为该 symbol 生成新的 entry 决策或执行新开仓操作。
+
+**非范围（Out of Scope）**
+
+- 不改变 Backtest 的 symbol 配置方式（仍由命令行参数或脚本控制）。
+- 不在本 Epic 中实现复杂的「自动调仓」或「Universe 动态优化」策略，仅支持手动增删。
+- 不提供多层角色权限体系，继续沿用 Epic 8 中的管理员 user_id 权限模型。
+
+**验收标准（Done Criteria）**
+
+1. 在 Paper / Live 模式下，Bot 使用的交易 Universe 不再直接依赖硬编码 `SYMBOLS`，而是通过可配置集合提供，且默认值与当前行为一致。
+2. 通过 Telegram：
+   - `/symbols list` 能正确显示当前 Universe 中的所有 symbol；
+   - `/symbols add <SYMBOL>` 在 symbol 通过 `MARKET_DATA_BACKEND` 校验时将其加入 Universe；
+   - `/symbols add <SYMBOL>` 在 symbol 不被 backend 支持时返回错误并拒绝添加；
+   - `/symbols remove <SYMBOL>` 将该 symbol 从 Universe 中移除，并在后续迭代中不再对其产生新开仓请求。
+3. 对 Backpack backend，新增/校验 symbol 时使用 USDC 计价规范；对其它 backend 默认使用 USDT 规范（如有例外将在实现层通过映射/配置处理）。
+4. 删除 symbol 后，已有持仓不被强制平仓，策略和风控仍可正常管理现有仓位，且不会再对该 symbol 创建新的 entry 信号或订单。
+5. 所有通过 `/symbols add/remove` 的变更操作均写入日志，至少包含时间戳、Telegram user_id、操作类型（add/remove）、symbol、新旧 Universe 摘要。
+
+---
+
+### Story 9.1: 可配置交易 Universe 抽象（Paper / Live）
+
+As a developer maintaining the trading universe,  
+I want a configurable symbol universe abstraction for Paper/Live modes,  
+So that tradable symbols are not hardcoded in settings.py.
+
+**Acceptance Criteria:**
+
+- 将当前硬编码 `SYMBOLS` 替换为一个可配置的交易 Universe 抽象（例如读取自配置文件或状态存储），对 Paper / Live 模式生效。
+- 提供获取当前 Universe 列表的统一接口，供 Bot 主循环和策略层使用。
+- 保持默认配置下的 Universe 与现有 `SYMBOLS` 一致，避免无意行为变化。
+
+---
+
+### Story 9.2: Telegram `/symbols` 命令接口（list/add/remove）
+
+As an operator of the trading bot,  
+I want a `/symbols` command with list/add/remove subcommands,  
+So that I can inspect and adjust the Paper/Live trading universe via Telegram.
+
+**Acceptance Criteria:**
+
+- 实现 `/symbols list`：
+  - 返回当前 Universe 中的所有 symbol，格式清晰，适合在聊天中阅读。
+- 实现 `/symbols add <SYMBOL>`：
+  - 仅管理员 user_id 可执行；
+  - 调用 Story 9.3 中的校验逻辑验证 symbol 是否有效；
+  - 通过校验时将 symbol 加入 Universe 并返回成功提示；
+  - 未通过校验时返回错误说明（包括 backend 类型与不被支持的原因）。
+- 实现 `/symbols remove <SYMBOL>`：
+  - 仅管理员 user_id 可执行；
+  - 从 Universe 中移除该 symbol（若不存在则返回提示但不报错）；
+  - 文案上明确说明「仅阻止后续新开仓，不会强制平掉当前持仓」。
+
+---
+
+### Story 9.3: 基于 `MARKET_DATA_BACKEND` 的 symbol 校验
+
+As a developer integrating exchange/data backends,  
+I want symbol validation to respect the current `MARKET_DATA_BACKEND`,  
+So that a symbol is only added if it is supported by the active market data source.
+
+**Acceptance Criteria:**
+
+- 基于当前 `MARKET_DATA_BACKEND`，调用对应的交易所或数据客户端查询是否支持某个 symbol：
+  - 对 Backpack backend，按 USDC 计价规范处理（如 `BTCUSDC`）；
+  - 对其它 backend，按 USDT 计价规范处理（如 `BTCUSDT`），如需额外映射在实现时补充。
+- 校验失败时，返回包含 backend 类型和失败原因的错误信息，用于 Telegram 反馈。
+- 提供最小测试覆盖，验证在至少两种 backend 下的校验行为（例如 Backpack + Binance）。
+
+---
+
+### Story 9.4: 行为约定、日志与文档更新
+
+As the owner of the trading system,  
+I want clear behavioral contracts, logging, and docs for symbol management,  
+So that changes to the trading universe are predictable and auditable.
+
+**Acceptance Criteria:**
+
+- 明确并在代码/文档中说明：
+  - 通过 `/symbols remove` 删除 symbol 仅阻止新开仓，对已有持仓不做强制平仓处理；
+  - Backtest 仍使用独立的 symbol 配置通道，与 Paper / Live 的 Universe 解耦。
+- 为 `/symbols add/remove` 操作增加日志记录：
+  - 至少包含时间戳、Telegram user_id、操作类型（add/remove）、symbol、新旧 Universe 摘要；
+  - 日志格式与现有 logging 体系兼容。
+- 在 README 或相关文档中增加一节「可配置交易 Universe & Telegram 管理」，概述：
+  - `/symbols` 命令用法；
+  - 与 `MARKET_DATA_BACKEND` 的关系；
+  - Backpack USDC vs 其它 backend USDT 的命名约定；
+  - 删除 symbol 时对持仓和风险的影响说明。
+
+---
+
+### Story 8.1: 运行时配置覆盖层（Runtime Overrides）
+
+As a developer maintaining the configuration system,  
+I want a runtime overrides layer on top of env-based settings,  
+So that Telegram-triggered config changes take effect without rewriting `.env` or restarting the process.
+
+**Acceptance Criteria:**
+
+- 定义一个集中管理的 runtime overrides 容器（例如基于 dict 或配置对象包装），支持按 key 设置/读取当前运行时值。
+- 所有受 Epic 8 影响的配置项（4 个白名单 key）在读取时均遵循统一优先级：runtime override > `.env` / 默认值。
+- 对不存在的 key 或未设置 override 的 key，有清晰的回退行为和类型安全保证（不会抛出意外异常）。
+- 为 overrides 层提供最小单元测试或集成测试，验证读写优先级与回退逻辑。
+
+---
+
+### Story 8.2: Telegram `/config` 命令接口
+
+As an operator of the trading bot,  
+I want a `/config` command with list/get/set subcommands,  
+So that I can inspect and adjust key runtime parameters via Telegram.
+
+**Acceptance Criteria:**
+
+- 在 Telegram Bot 中实现 `/config list`：
+  - 返回当前支持远程修改的 4 个配置项及其当前生效值。
+- 在 Telegram Bot 中实现 `/config get <KEY>`：
+  - 对合法 key 返回当前值和合法取值范围/枚举说明；
+  - 对非法 key 返回错误信息，并列出受支持的 key 列表。
+- 在 Telegram Bot 中实现 `/config set <KEY> <VALUE>`：
+  - 收到合法 key + 合法 value 时，调用 runtime overrides 层更新对应配置项；
+  - 返回包含 old_value/new_value 的成功提示；
+  - 对非法 value 返回明确的错误和合法值提示。
+
+---
+
+### Story 8.3: 权限控制与审计日志
+
+As the owner of the trading system,  
+I want strict admin-only permissions and audit logs for config changes,  
+So that sensitive runtime adjustments are controlled and traceable.
+
+**Acceptance Criteria:**
+
+- 在配置中支持配置一个管理员 Telegram user_id（或等价机制）。
+- `/config set` 仅在请求方 user_id 匹配管理员配置时才会执行：
+  - 非管理员调用时返回「无权限修改，只能查看」提示，不改动任何配置。
+- 每次成功的 `/config set` 调用都会写入日志，至少包括：
+  - 时间戳、Telegram user_id、key、old_value、new_value；
+  - 日志级别和格式与现有 logging 体系兼容。
+
+---
+
+### Story 8.4: 端到端验证与文档更新
+
+As a maintainer of the bot,  
+I want end-to-end tests and updated docs for the runtime config feature,  
+So that the behavior is reliable and clearly communicated.
+
+**Acceptance Criteria:**
+
+- 至少完成一次端到端验证：
+  - 在本地或测试环境中运行 Bot；
+  - 通过 Telegram 修改上述 4 个配置项中的至少 2 个；
+  - 观察下一轮交易循环中配置已按预期生效，且重启后恢复 `.env` 默认值。
+- 在 README 或配置说明文档中增加一小节，简要说明：
+  - `/config` 命令的用法（list/get/set）；
+  - 受支持的配置项及其取值范围；
+  - 权限与风险提示（仅管理员可修改，不会自动写回 `.env`）。
 
 ---
 
 ## Summary
 
-- 当前版本包含 3 个已规划 Epic：  
+- 当前版本包含 4 个已规划 Epic：  
 - 平台能力 Epic 1：统一支持任意 OpenAI 协议兼容 LLM 提供商，并通过 Story 1.1 覆盖最基础的「环境变量配置与切换」能力。  
 - 交易执行 Epic 6：统一交易所执行层 & 多交易所可插拔支持，并通过 Story 6.1–6.5 规划从抽象设计到 Binance / Hyperliquid 适配与迁移的完整路径。  
+- 运营配置 Epic 8：通过 Telegram 远程运营配置管理（Runtime Config Control），为授权管理员提供运行时参数调节能力（交易后端、行情后端、interval、LLM temperature），降低运维摩擦。  
 - 安全与风控 Epic 7：风控系统增强（Emergency Controls），通过 Epic 7.1–7.4 规划从风控基础设施、Kill-Switch、每日亏损限制到 Telegram 命令集成的完整路径，并与独立风控 PRD 对齐。  
 
 ## Epic 7: 风控系统增强（Emergency Controls）

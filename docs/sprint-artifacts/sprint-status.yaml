@@ -29,7 +29,7 @@
 # - SM typically drafts next story after previous one is 'done' to incorporate learnings
 # - Dev moves story to 'review', SM reviews, then Dev moves to 'done'
 
-generated: 2025-11-30
+generated: 2025-12-01
 project: LLM-trader-test
 project_key: LLM-trader-test
 tracking_system: file-system
@@ -83,3 +83,19 @@ development_status:
   7-4-4-实现-reset-daily-命令: done
   7-4-5-实现-help-命令和安全校验: done
   epic-7-4-retrospective: optional
+
+  # === Epic 8: Telegram 远程运营配置管理（Runtime Config Control） ===
+  epic-8: backlog
+  8-1-运行时配置覆盖层-runtime-overrides: done
+  8-2-telegram-config-命令接口: backlog
+  8-3-权限控制与审计日志: backlog
+  8-4-端到端验证与文档更新: backlog
+  epic-8-retrospective: optional
+
+  # === Epic 9: 可配置交易对 Universe & Telegram 管理 ===
+  epic-9: backlog
+  9-1-可配置交易-universe-抽象-paper-live: backlog
+  9-2-telegram-symbols-命令接口-list-add-remove: backlog
+  9-3-基于-market-data-backend-的-symbol-校验: backlog
+  9-4-行为约定-日志与文档更新: backlog
+  epic-9-retrospective: optional

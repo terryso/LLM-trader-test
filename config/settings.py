@@ -408,7 +408,7 @@ START_CAPITAL = _TRADING_CFG.start_capital
 
 # ───────────────────────── SYMBOLS ─────────────────────────
 SYMBOLS = [
-    "ETHUSDT", "SOLUSDT", "XRPUSDT", "BTCUSDT", "BNBUSDT", "MONUSDT"
+    "ETHUSDT", "SOLUSDT", "XRPUSDT", "BTCUSDT", "BNBUSDT"
 ]
 SYMBOL_TO_COIN = {
     "ETHUSDT": "ETH",
@@ -416,7 +416,6 @@ SYMBOL_TO_COIN = {
     "XRPUSDT": "XRP",
     "BTCUSDT": "BTC",
     "BNBUSDT": "BNB",
-    "MONUSDT": "MON",
 }
 COIN_TO_SYMBOL = {coin: symbol for symbol, coin in SYMBOL_TO_COIN.items()}
 
@@ -608,6 +607,136 @@ DAILY_LOSS_LIMIT_PCT = _parse_float_env_with_range(
     max_val=100.0,
     var_name="DAILY_LOSS_LIMIT_PCT",
 )
+
+# ───────────────────────── EFFECTIVE CONFIG GETTERS ─────────────────────────
+# These functions implement the priority: runtime override > env > default
+# They are the preferred way to access the 4 whitelisted config values at runtime
+
+def get_effective_trading_backend() -> str:
+    """
+    Get the effective trading backend with override priority.
+    
+    Priority: runtime override > env > default ('paper')
+    
+    Returns:
+        Effective trading backend value
+    """
+    from config.runtime_overrides import get_runtime_override, VALID_TRADING_BACKENDS
+    
+    override = get_runtime_override("TRADING_BACKEND")
+    if override is not None:
+        # Normalize and validate the override value
+        normalized = str(override).strip().lower()
+        if normalized in VALID_TRADING_BACKENDS:
+            return normalized
+        # Invalid override value - log warning and fall through to env
+        EARLY_ENV_WARNINGS.append(
+            f"Invalid TRADING_BACKEND override '{override}'; ignoring and using env/default."
+        )
+    
+    # Fall back to module-level value (loaded from env at import time)
+    return TRADING_BACKEND
+
+
+def get_effective_market_data_backend() -> str:
+    """
+    Get the effective market data backend with override priority.
+    
+    Priority: runtime override > env > default ('binance')
+    
+    Returns:
+        Effective market data backend value
+    """
+    from config.runtime_overrides import get_runtime_override, VALID_MARKET_DATA_BACKENDS
+    
+    override = get_runtime_override("MARKET_DATA_BACKEND")
+    if override is not None:
+        # Normalize and validate the override value
+        normalized = str(override).strip().lower()
+        if normalized in VALID_MARKET_DATA_BACKENDS:
+            return normalized
+        # Invalid override value - log warning and fall through to env
+        EARLY_ENV_WARNINGS.append(
+            f"Invalid MARKET_DATA_BACKEND override '{override}'; ignoring and using env/default."
+        )
+    
+    # Fall back to module-level value (loaded from env at import time)
+    return MARKET_DATA_BACKEND
+
+
+def get_effective_interval() -> str:
+    """
+    Get the effective trading interval with override priority.
+    
+    Priority: runtime override > env > default ('15m')
+    
+    Returns:
+        Effective interval value (e.g., '15m', '1h')
+    """
+    from config.runtime_overrides import get_runtime_override, VALID_INTERVALS
+    
+    override = get_runtime_override("TRADEBOT_INTERVAL")
+    if override is not None:
+        # Normalize and validate the override value
+        normalized = str(override).strip().lower()
+        if normalized in VALID_INTERVALS:
+            return normalized
+        # Invalid override value - log warning and fall through to env
+        EARLY_ENV_WARNINGS.append(
+            f"Invalid TRADEBOT_INTERVAL override '{override}'; ignoring and using env/default."
+        )
+    
+    # Fall back to module-level value (loaded from env at import time)
+    return INTERVAL
+
+
+def get_effective_check_interval() -> int:
+    """
+    Get the effective check interval in seconds with override priority.
+    
+    This is derived from get_effective_interval().
+    
+    Returns:
+        Effective check interval in seconds
+    """
+    interval = get_effective_interval()
+    return _INTERVAL_TO_SECONDS.get(interval, _INTERVAL_TO_SECONDS[DEFAULT_INTERVAL])
+
+
+def get_effective_llm_temperature() -> float:
+    """
+    Get the effective LLM temperature with override priority.
+    
+    Priority: runtime override > env > default (0.7)
+    
+    Returns:
+        Effective LLM temperature value
+    """
+    from config.runtime_overrides import (
+        get_runtime_override, LLM_TEMPERATURE_MIN, LLM_TEMPERATURE_MAX
+    )
+    
+    override = get_runtime_override("TRADEBOT_LLM_TEMPERATURE")
+    if override is not None:
+        try:
+            float_value = float(override)
+            if LLM_TEMPERATURE_MIN <= float_value <= LLM_TEMPERATURE_MAX:
+                return float_value
+            # Out of range - log warning and fall through to env
+            EARLY_ENV_WARNINGS.append(
+                f"TRADEBOT_LLM_TEMPERATURE override {float_value} out of range "
+                f"[{LLM_TEMPERATURE_MIN}, {LLM_TEMPERATURE_MAX}]; ignoring and using env/default."
+            )
+        except (TypeError, ValueError):
+            # Invalid value - log warning and fall through to env
+            EARLY_ENV_WARNINGS.append(
+                f"Invalid TRADEBOT_LLM_TEMPERATURE override '{override}'; "
+                "ignoring and using env/default."
+            )
+    
+    # Fall back to module-level value (loaded from env at import time)
+    return LLM_TEMPERATURE
+
 
 # ───────────────────────── CSV FILES ─────────────────────────
 STATE_CSV = DATA_DIR / "portfolio_state.csv"

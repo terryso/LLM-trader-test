@@ -1,9 +1,32 @@
 """Configuration module for LLM-trader."""
+from config.runtime_overrides import (
+    # Runtime overrides API
+    get_runtime_overrides,
+    reset_runtime_overrides,
+    set_runtime_override,
+    get_runtime_override,
+    clear_runtime_override,
+    get_all_runtime_overrides,
+    get_override_whitelist,
+    validate_override_value,
+    OVERRIDE_WHITELIST,
+    VALID_TRADING_BACKENDS,
+    VALID_MARKET_DATA_BACKENDS,
+    VALID_INTERVALS,
+    LLM_TEMPERATURE_MIN,
+    LLM_TEMPERATURE_MAX,
+)
 from config.settings import (
     # Path setup
     BASE_DIR,
     DOTENV_PATH,
     DATA_DIR,
+    # Effective config getters (override > env > default)
+    get_effective_trading_backend,
+    get_effective_market_data_backend,
+    get_effective_interval,
+    get_effective_check_interval,
+    get_effective_llm_temperature,
     # API Keys
     API_KEY,
     API_SECRET,
@@ -148,4 +171,25 @@ __all__ = [
     "MESSAGES_RECENT_CSV",
     "MAX_RECENT_MESSAGES",
     "STATE_COLUMNS",
+    # Runtime overrides
+    "get_runtime_overrides",
+    "reset_runtime_overrides",
+    "set_runtime_override",
+    "get_runtime_override",
+    "clear_runtime_override",
+    "get_all_runtime_overrides",
+    "get_override_whitelist",
+    "validate_override_value",
+    "OVERRIDE_WHITELIST",
+    "VALID_TRADING_BACKENDS",
+    "VALID_MARKET_DATA_BACKENDS",
+    "VALID_INTERVALS",
+    "LLM_TEMPERATURE_MIN",
+    "LLM_TEMPERATURE_MAX",
+    # Effective config getters
+    "get_effective_trading_backend",
+    "get_effective_market_data_backend",
+    "get_effective_interval",
+    "get_effective_check_interval",
+    "get_effective_llm_temperature",
 ]

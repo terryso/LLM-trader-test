@@ -1,0 +1,144 @@
+<story-context id="LLM-trader-test/story-8-1" v="1.0">
+  <metadata>
+    <epicId>8</epicId>
+    <storyId>1</storyId>
+    <title>运行时配置覆盖层（Runtime Overrides）</title>
+    <status>drafted</status>
+    <generatedAt>2025-12-01T00:00:00Z</generatedAt>
+    <generator>BMAD Story Context Workflow (simulated)</generator>
+    <sourceStoryPath>docs/sprint-artifacts/8-1-运行时配置覆盖层-runtime-overrides.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA>developer maintaining the configuration system</asA>
+    <iWant>a runtime overrides layer on top of env-based settings</iWant>
+    <soThat>Telegram-triggered config changes take effect without rewriting .env or restarting the process</soThat>
+    <tasks>
+      - Task 1：设计 runtime overrides 抽象与数据结构（AC1），定义集中管理的 overrides 容器及其 API（如 set_override / get_value）。
+      - Task 2：将 4 个白名单配置项（TRADING_BACKEND、MARKET_DATA_BACKEND、TRADEBOT_INTERVAL、TRADEBOT_LLM_TEMPERATURE）接入 overrides 优先读取路径（AC2, AC3），在不改变现有错误语义的前提下引入统一优先级：override &gt; env &gt; 默认值。
+      - Task 3：为后续 Telegram `/config` 命令预留清晰的调用接口（AC2, AC3），在配置层暴露操作 overrides 的 API，而不是让通知层直接操作环境变量。
+      - Task 4：为 overrides 层新增单元测试与集成测试（AC4），覆盖读写优先级、缺省回退与非法值处理，并保持现有测试全部通过。
+    </tasks>
+  </story>
+
+  <acceptanceCriteria>
+    - AC1：定义一个集中管理的 runtime overrides 容器（例如基于 dict 或配置对象包装），支持按 key 设置/读取当前运行时值。
+    - AC2：所有受 Epic 8 影响的 4 个白名单配置项（TRADING_BACKEND、MARKET_DATA_BACKEND、TRADEBOT_INTERVAL、TRADEBOT_LLM_TEMPERATURE）在读取时均遵循统一优先级：runtime override &gt; .env / 默认值。
+    - AC3：对不存在的 key 或未设置 override 的 key，有清晰的回退行为和类型安全保证（不会抛出意外异常，非法值仍按现有规则回退并记录 warning）。
+    - AC4：为 overrides 层提供最小单元测试或集成测试，验证读写优先级与回退逻辑，对 4 个白名单 key 的行为有明确测试覆盖。
+  </acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+      - path: docs/epics.md
+        title: LLM-trader-test - Epic Breakdown
+        section: Story 8.1 - 运行时配置覆盖层（Runtime Overrides）
+        snippet: 描述 Epic 8 下的 Story 8.1，要求提供一层基于 env 的 runtime overrides 容器，覆盖 TRADING_BACKEND、MARKET_DATA_BACKEND、TRADEBOT_INTERVAL、TRADEBOT_LLM_TEMPERATURE 四个配置项，并通过测试验证 overrides 优先级与回退逻辑。
+      - path: docs/epics.md
+        title: LLM-trader-test - Epic Breakdown
+        section: Epic 8 - Telegram 远程运营配置管理（Runtime Config Control）
+        snippet: 说明 Epic 8 的整体目标：通过 Telegram `/config` 命令在运行时调整受控白名单配置项，仅影响当前进程的 runtime overrides，而不修改 .env 文件，并要求具备权限校验与日志审计能力。
+      - path: docs/prd.md
+        title: DeepSeek Paper Trading Bot 产品需求文档
+        section: 4.3 LLM 配置与 Prompt 管理 / 4.1 交易主循环
+        snippet: 通过环境变量控制 LLM 模型、采样参数与交易主循环 interval（TRADEBOT_LLM_MODEL、TRADEBOT_LLM_TEMPERATURE、TRADEBOT_INTERVAL 等），当前需要修改 .env 并重启进程才能生效，为引入 runtime overrides 提供产品背景。
+      - path: docs/architecture/06-project-structure-and-mapping.md
+        title: 架构 - 项目结构与 PRD 映射
+        section: 6. 项目结构与源码树 / 6.2 PRD 功能块到架构组件的映射
+        snippet: 明确配置层集中在 config/settings.py，LLM 配置与 Prompt 管理由 config 与 llm 模块共同承担，是实现 runtime overrides 的主要落地点；同时列出了 tests/ 目录作为统一测试入口。
+      - path: docs/architecture/04-integrations.md
+        title: 架构 - 外部依赖与集成点
+        section: 4.2 交易执行后端 / 4.3 LLM 服务 / 4.6 集成配置入口
+        snippet: 描述 TRADING_BACKEND 与 MARKET_DATA_BACKEND 的支持取值，以及 LLM_API_BASE_URL / LLM_API_KEY / LLM_API_TYPE 的配置方式，并强调 .env.example 作为配置示例入口。
+      - path: README.md
+        title: Backpack 刷量交易 Bot README
+        section: 3. Backpack 相关配置说明 / 6. 风险控制与 Telegram 通知
+        snippet: 展示如何在 .env 中设置 TRADING_BACKEND、MARKET_DATA_BACKEND、TRADEBOT_LLM_TEMPERATURE 等关键参数，并通过注释解释其含义与默认行为，为 overrides 行为提供用户文档上下文。
+      - path: .env.example
+        title: 示例环境变量配置
+        section: LLM Configuration / TRADING_BACKEND / MARKET_DATA_BACKEND / 风控配置
+        snippet: 给出 TRADEBOT_INTERVAL、TRADEBOT_LLM_MODEL、TRADEBOT_LLM_TEMPERATURE 以及 TRADING_BACKEND、MARKET_DATA_BACKEND 等变量的默认值与注释，是 runtime overrides 需要保持兼容的权威字段清单。
+      - path: docs/architecture/07-implementation-patterns.md
+        title: 架构 - 实现模式与一致性规则
+        section: 7.2 目录与代码结构 / 7.6 位置模式 / 7.8 测试与校验模式
+        snippet: 约定配置集中在 config/，敏感信息必须通过 .env 注入，并要求测试统一放在 tests/ 下且使用 pytest；为新增 runtime overrides 层与对应测试提供结构和一致性约束。
+    </docs>
+
+    <code>
+      - path: config/settings.py
+        kind: config-module
+        symbol: TradingConfig, load_trading_config_from_env, LLM 和交易配置加载 helpers
+        lines: 182-321, 493-610
+        reason: 集中解析 TRADING_BACKEND、MARKET_DATA_BACKEND、TRADEBOT_INTERVAL、TRADEBOT_LLM_TEMPERATURE 以及 LLM 相关环境变量，是接入 runtime overrides 读取优先级的主要实现位置。
+      - path: tests/test_config_and_env.py
+        kind: test
+        symbol: BacktestConfigFromEnvironmentTests, ConfigureEnvironmentTests
+        lines: 11-183
+        reason: 通过 BacktestConfig.from_environment 和 configure_environment 覆盖基于 env 的配置解析与注入逻辑，验证 interval 与 LLM 配置的默认值与非法值回退行为，为 overrides 层保持兼容提供参考。
+      - path: tests/test_llm_config.py
+        kind: test
+        symbol: LlmConfigurationRefreshTests
+        lines: 10-111
+        reason: 验证 refresh_llm_configuration_from_env 从环境变量刷新 LLM 相关运行时设置（模型、温度、max_tokens、thinking、LLM_API_* 等），并处理系统 Prompt 文本/文件优先级，是设计 overrides 行为时需要保持一致的模式。
+      - path: tests/test_llm_recovery_and_backend.py
+        kind: test
+        symbol: MarketDataBackendSelectionTests
+        lines: 109-139
+        reason: 覆盖基于 MARKETING_DATA_BACKEND 选择市场数据客户端的逻辑，验证 "binance" 与 "backpack" 分支行为；runtime overrides 需要在不破坏这些测试前提下改变配置来源优先级。
+    </code>
+
+    <dependencies>
+      - ecosystem: python
+        manifests:
+          - path: requirements.txt
+        packages:
+          - name: python-dotenv
+            version: "1.0.0"
+          - name: requests
+            version: "2.31.0"
+          - name: streamlit
+            version: "1.38.0"
+          - name: hyperliquid-python-sdk
+            version: ">=0.9.0"
+          - name: eth-account
+            version: ">=0.10.0"
+          - name: ccxt
+            version: "(see installed version)"
+    </dependencies>
+  </artifacts>
+
+  <constraints>
+    - runtime overrides 必须是进程内存级的覆盖层，不得写回 .env 文件，也不得改变 .env.example 中字段的语义与默认值，只负责控制当前进程的有效配置。
+    - 对 TRADING_BACKEND 和 MARKET_DATA_BACKEND 的 overrides 行为必须保持与现有实现兼容：默认回退到 paper / binance，并在配置非法时继续记录 warning，而不是抛出未捕获异常。
+    - overrides 层应位于 config/ 内部，不允许业务模块或通知层直接操作环境变量或全局状态；Telegram `/config` 命令应通过公开的配置 API 间接修改运行时配置。
+    - 新增的配置访问模式需要遵守架构文档中的位置模式与实现模式（例如统一从 config 导入配置，测试集中在 tests/），避免引入循环依赖或多套并行配置路径。
+  </constraints>
+
+  <interfaces>
+    - name: load_trading_config_from_env
+      kind: python-function
+      signature: "load_trading_config_from_env() -&gt; TradingConfig"
+      path: config/settings.py
+    - name: refresh_llm_configuration_from_env
+      kind: python-function
+      signature: "refresh_llm_configuration_from_env() -&gt; None"
+      path: config/settings.py
+  </interfaces>
+
+  <tests>
+    <standards>
+      - 遵循 docs/architecture/07-implementation-patterns.md 中关于配置、位置与测试的一致性约定：配置集中在 config/，敏感信息通过 .env 注入，测试统一放在 tests/ 目录并使用 pytest 风格。
+      - 新增 runtime overrides 行为时，应通过 ./scripts/run_tests.sh 运行全量测试，确保现有测试（尤其是 test_config_and_env.py、test_llm_config.py、test_llm_recovery_and_backend.py）全部通过。
+    </standards>
+    <locations>
+      - tests/
+      - scripts/run_tests.sh
+    </locations>
+    <ideas>
+      - 针对 AC1：为 overrides 容器新增测试，验证 set/get 行为、覆盖已有值与清除覆盖后的回退行为，并确保只接受白名单 key 或在扩展时有清晰的 key 列表。
+      - 针对 AC2：为 TRADING_BACKEND、MARKET_DATA_BACKEND、TRADEBOT_INTERVAL、TRADEBOT_LLM_TEMPERATURE 分别编写测试，确认在设置 runtime override 后，配置解析函数优先返回 override 值；在未设置 override 时仍使用 env/默认值。
+      - 针对 AC3：为非法值与缺省场景编写测试，验证 overrides 未设置或值无效时，会回退到现有实现的默认行为（包括取值范围与 warning 日志），不会抛出未捕获异常。
+      - 针对 AC4：在新增 overrides 测试的基础上，运行 ./scripts/run_tests.sh 并记录一次成功运行结果，确保 runtime overrides 不破坏现有 LLM 配置与市场数据 backend 选择相关测试。
+    </ideas>
+  </tests>
+</story-context>
