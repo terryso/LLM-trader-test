@@ -71,6 +71,18 @@ def refresh_llm_configuration_from_env() -> None:
     OPENROUTER_API_KEY = _config_settings.OPENROUTER_API_KEY
     SYSTEM_PROMPT_SOURCE = _config_settings.SYSTEM_PROMPT_SOURCE
 
+def get_effective_interval() -> str:
+    """Get the effective interval from environment or config."""
+    return _config_settings.get_effective_interval()
+
+def get_effective_check_interval() -> int:
+    """Get the effective check interval from environment or config."""
+    return _config_settings.get_effective_check_interval()
+
+def get_effective_llm_temperature() -> float:
+    """Get the effective LLM temperature from environment or config."""
+    return _config_settings.get_effective_llm_temperature()
+
 # ───────────────────────── STATE MANAGEMENT ─────────────────────────
 import core.state as _core_state
 from core.state import (
@@ -278,7 +290,11 @@ def poll_telegram_commands() -> None:
                 balance_fn=lambda: balance,
                 total_margin_fn=calculate_total_margin,
                 start_capital=START_CAPITAL,
-                sortino_ratio_fn=lambda: calculate_sortino_ratio(equity_history, CHECK_INTERVAL, RISK_FREE_RATE),
+                sortino_ratio_fn=lambda: calculate_sortino_ratio(
+                    equity_history,
+                    get_effective_check_interval(),
+                    RISK_FREE_RATE,
+                ),
                 risk_control_enabled=RISK_CONTROL_ENABLED,
                 daily_loss_limit_enabled=DAILY_LOSS_LIMIT_ENABLED,
                 daily_loss_limit_pct=DAILY_LOSS_LIMIT_PCT,
@@ -345,7 +361,11 @@ def _telegram_command_loop() -> None:
                     balance_fn=lambda: balance,
                     total_margin_fn=calculate_total_margin,
                     start_capital=START_CAPITAL,
-                    sortino_ratio_fn=lambda: calculate_sortino_ratio(equity_history, CHECK_INTERVAL, RISK_FREE_RATE),
+                    sortino_ratio_fn=lambda: calculate_sortino_ratio(
+                        equity_history,
+                        get_effective_check_interval(),
+                        RISK_FREE_RATE,
+                    ),
                     risk_control_enabled=RISK_CONTROL_ENABLED,
                     daily_loss_limit_enabled=DAILY_LOSS_LIMIT_ENABLED,
                     daily_loss_limit_pct=DAILY_LOSS_LIMIT_PCT,
@@ -366,7 +386,8 @@ def _telegram_command_loop() -> None:
 
 def fetch_market_data(symbol: str) -> Optional[Dict[str, Any]]:
     """Fetch current market data for a symbol."""
-    return _fetch_market_data(symbol, get_market_data_client, INTERVAL)
+    interval = get_effective_interval()
+    return _fetch_market_data(symbol, get_market_data_client, interval)
 
 
 def load_state() -> None:
@@ -620,8 +641,14 @@ def call_deepseek_api(prompt: str) -> Optional[Dict[str, Any]]:
         return None
     
     try:
-        log_ai_message("sent", "system", TRADING_RULES_PROMPT, {"model": LLM_MODEL_NAME})
-        log_ai_message("sent", "user", prompt)
+        temperature = get_effective_llm_temperature()
+        metadata = {
+            "model": LLM_MODEL_NAME,
+            "temperature": temperature,
+            "max_tokens": LLM_MAX_TOKENS,
+        }
+        log_ai_message("sent", "system", TRADING_RULES_PROMPT, metadata)
+        log_ai_message("sent", "user", prompt, metadata)
         
         payload = {
             "model": LLM_MODEL_NAME,
@@ -629,7 +656,7 @@ def call_deepseek_api(prompt: str) -> Optional[Dict[str, Any]]:
                 {"role": "system", "content": TRADING_RULES_PROMPT},
                 {"role": "user", "content": prompt},
             ],
-            "temperature": LLM_TEMPERATURE,
+            "temperature": temperature,
             "max_tokens": LLM_MAX_TOKENS,
         }
         if LLM_THINKING_PARAM is not None:
@@ -677,7 +704,7 @@ def format_prompt_for_deepseek() -> str:
         increment_invocation_count=increment_invocation_count,
         calculate_total_margin=lambda: calculate_total_margin_for_positions(positions.values()),
         calculate_unrealized_pnl=calculate_unrealized_pnl,
-        interval=INTERVAL,
+        interval=get_effective_interval(),
     )
 
 
@@ -793,9 +820,12 @@ def _run_iteration() -> None:
     iteration_counter = iteration
     clear_iteration_messages()
     
+    # Capture current check interval for early retry logic (e.g., Binance client unavailable)
+    initial_check_interval = get_effective_check_interval()
+    
     if not get_binance_client():
         logging.warning("Binance client unavailable; retrying...")
-        time.sleep(min(CHECK_INTERVAL, 60))
+        time.sleep(min(initial_check_interval, 60))
         return
     
     # Header
@@ -860,15 +890,21 @@ def _run_iteration() -> None:
     
     # Log and save
     _log_portfolio_state(
-        positions, balance, calculate_total_equity,
+        positions,
+        balance,
+        calculate_total_equity,
         lambda: calculate_total_margin_for_positions(positions.values()),
         lambda: fetch_market_data("BTCUSDT").get("price") if fetch_market_data("BTCUSDT") else None,
         get_current_time,
     )
     save_state()
     
-    logging.info(f"Waiting {CHECK_INTERVAL}s...")
-    sleep_with_countdown(CHECK_INTERVAL)
+    # Re-read effective check interval at the end of the iteration so that
+    # any /config set TRADEBOT_INTERVAL changes applied during this iteration
+    # are reflected immediately in the next sleep duration.
+    check_interval = get_effective_check_interval()
+    logging.info(f"Waiting {check_interval}s...")
+    sleep_with_countdown(check_interval)
 
 
 if __name__ == "__main__":

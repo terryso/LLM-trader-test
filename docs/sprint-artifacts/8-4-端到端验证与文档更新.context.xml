@@ -1,0 +1,140 @@
+<story-context id=".bmad/bmm/workflows/4-implementation/story-context/template" v="1.0">
+  <metadata>
+    <epicId>8</epicId>
+    <storyId>4</storyId>
+    <title>端到端验证与文档更新</title>
+    <status>drafted</status>
+    <generatedAt>2025-12-02</generatedAt>
+    <generator>BMAD Story Context Workflow (manual agent run)</generator>
+    <sourceStoryPath>docs/sprint-artifacts/8-4-端到端验证与文档更新.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA><![CDATA[maintainer of the bot]]></asA>
+    <iWant><![CDATA[end-to-end tests and updated docs for the runtime config feature]]></iWant>
+    <soThat><![CDATA[the behavior is reliable and clearly communicated]]></soThat>
+    <tasks><![CDATA[
+## Tasks / Subtasks
+
+- [ ] Task 1 – 设计端到端验证场景（AC1, AC2)
+  - [ ] 1.1 明确实验环境前置条件：paper 模式、Telegram Bot 配置、最小 `.env` 示例。
+  - [ ] 1.2 设计至少一个具体 E2E 用例，包含：初始配置 → `/config set` 操作序列 → 预期行为与观测指标。
+  - [ ] 1.3 在 Story 或独立 doc 中记录手工执行步骤，便于他人复现。
+- [ ] Task 2 – 实现 / 编排 E2E 验证（AC1, AC2）
+  - [ ] 2.1 选择合适方式执行 E2E：可为手工步骤清单、辅助脚本（如 `scripts/manual_runtime_config_e2e.py`）、或集成测试用例。
+  - [ ] 2.2 在 E2E 中实际调用 `/config set` 修改至少 2 个配置项，并记录关键日志 / CSV 片段，用于验收证据。
+  - [ ] 2.3 验证进程重启后配置回退行为，并记录对比前后配置的证据（如日志片段或 `get_effective_*` 输出）。
+- [ ] Task 3 – 文档更新（AC3）
+  - [ ] 3.1 在 `README.md` / `README_EN.md` 或 `docs/` 下配置说明中新增「Runtime Config & /config 命令」小节。
+  - [ ] 3.2 描述 `/config list|get|set` 的使用方式、示例命令以及 4 个配置项的取值范围。
+  - [ ] 3.3 补充权限与风险提示，引用 Story 8.3 中关于管理员权限与审计日志的约定。
+- [ ] Task 4 – 回归测试与质量检查（AC4）
+  - [ ] 4.1 为新增脚本 / 测试补充或更新对应单元/集成测试（如 `tests/test_telegram_config_commands.py` 或新的 E2E 测试文件）。
+  - [ ] 4.2 运行 `./scripts/run_tests.sh`，确保全部测试通过。
+  - [ ] 4.3 根据需要更新本 Story 文档的 Change Log 与 Dev Agent Record。
+    ]]></tasks>
+  </story>
+
+  <acceptanceCriteria><![CDATA[
+## Acceptance Criteria
+
+1. 在本地或测试环境中完成至少一次端到端验证（E2E），覆盖运行时配置覆盖层 + Telegram `/config` 命令 + 交易主循环：
+   - 以纸上交易模式启动 `bot.py`，且已正确配置 Telegram Bot（含管理员 user_id）。
+   - 通过 Telegram 对以下 4 个白名单配置项中的至少 2 个执行 `/config set`：
+     - `TRADING_BACKEND`
+     - `MARKET_DATA_BACKEND`
+     - `TRADEBOT_INTERVAL`
+     - `TRADEBOT_LLM_TEMPERATURE`
+   - 观察下一轮交易循环中实际生效的 backend / interval / temperature 已按最新运行时值工作（例如通过日志与 `ai_decisions.csv` / `portfolio_state.json` 变化加以确认）。
+2. 验证重启行为：
+   - 在完成上一步 E2E 验证后停止 Bot 进程；
+   - 在不修改 `.env` 的前提下重新启动 Bot；
+   - 确认新的运行进程中上述配置项均回退到 `.env` / 默认值，而非继续沿用 runtime overrides。
+3. 在项目文档中新增一小节，完整说明运行时配置与 `/config` 命令的用法，至少包括：
+   - `/config list|get|set` 的基本语义与参数格式；
+   - 支持的 4 个配置项及其取值范围 / 合法枚举；
+   - 权限与风险提示（仅管理员可调用 `/config set`，命令不会自动写回 `.env`，所有修改仅对当前进程生效）。
+4. 所有新增/修改内容通过现有测试与 lint，`./scripts/run_tests.sh` 无回归。
+  ]]></acceptanceCriteria>
+
+  <artifacts>
+    <docs><![CDATA[
+- path=docs/epics.md; title=Epic 8 – Runtime Config Control; section=Story 8.4: 端到端验证与文档更新; snippet=描述为 runtime config 特性提供端到端验证与文档更新的业务需求与 AC。
+- path=docs/epics.md; title=Epic 8 – Runtime Config Control; section=Story 8.1–8.3; snippet=定义 runtime overrides 层、`/config` 命令接口以及管理员权限与审计日志，为 8.4 提供前置能力。
+- path=docs/PRD.md; title=DeepSeek Paper Trading Bot PRD; section=4.3 LLM 配置与 Prompt 管理; snippet=说明通过环境变量控制 LLM 模型、temperature 与 max tokens，并区分 backtest/live 配置。
+- path=docs/PRD.md; title=DeepSeek Paper Trading Bot PRD; section=4.7 Telegram 通知; snippet=描述通过 Telegram 进行运行状态通知和运维交互的需求，为 `/config` 命令提供产品背景。
+- path=docs/architecture/06-project-structure-and-mapping.md; title=项目结构与源码树; section=6.x; snippet=给出 `config/`、`notifications/`、`bot.py`、`tests/` 等模块的职责划分与与 PRD 功能块的映射。
+- path=docs/architecture/07-implementation-patterns.md; title=实现模式与一致性规则; section=7.2–7.8; snippet=约定分层结构、配置位置、测试位置与运行方式（pytest、tests/ 目录、手工 smoke 脚本）。
+- path=docs/sprint-artifacts/8-1-运行时配置覆盖层-runtime-overrides.md; title=Story 8.1: 运行时配置覆盖层; section=Dev Notes; snippet=定义 runtime overrides 容器、白名单 key、合法值范围和 `get_effective_*` 读取语义。
+- path=docs/sprint-artifacts/8-2-telegram-config-命令接口.md; title=Story 8.2: Telegram `/config` 命令接口; section=Dev Notes; snippet=说明 `/config list|get|set` 的 handler 设计、错误处理与与 runtime overrides 集成方式。
+- path=docs/sprint-artifacts/8-3-权限控制与审计日志.md; title=Story 8.3: 权限控制与审计日志; section=Dev Notes / Senior Developer Review; snippet=引入管理员 user_id 权限控制和 `CONFIG_AUDIT` 日志，为 8.4 的 E2E 验证提供安全与审计前提。
+- path=docs/sprint-artifacts/8-4-端到端验证与文档更新.md; title=Story 8.4: 端到端验证与文档更新; section=Story / Acceptance Criteria / Dev Notes; snippet=本 Story 草稿，给出 E2E 验证与文档更新的 AC、Tasks 与架构/测试约束。
+    ]]></docs>
+
+    <code><![CDATA[
+- path=config/runtime_overrides.py; kind=config; symbol=RuntimeOverrides, validate_override_value; lines=1-260; reason=集中管理 runtime overrides、白名单 key 与合法值校验，是 `/config set` 与 E2E 覆盖的核心实现。
+- path=config/settings.py; kind=config; symbol=get_effective_trading_backend, get_effective_market_data_backend, get_effective_interval, get_effective_llm_temperature; lines=600-760; reason=通过 overrides + env + 默认值组合出实际生效配置，是验证 runtime config 行为的观测入口。
+- path=notifications/telegram_commands.py; kind=notifications; symbol=handle_config_command, handle_config_list_command, handle_config_get_command, handle_config_set_command, _check_admin_permission, _log_config_audit; lines=1100-1600; reason=实现 `/config list|get|set` 命令、管理员权限校验与审计日志，是 E2E 流程中的 Telegram 侧入口。
+- path=notifications/telegram.py; kind=notifications; symbol=send_telegram_message, create_kill_resume_handlers; lines=1-260; reason=封装 Telegram 发送与命令 handler wiring，保证 `/config` 命令能在运行 bot 时被正确路由。
+- path=bot.py; kind=entrypoint; symbol=get_telegram_command_handler, poll_telegram_commands; lines=200-260; reason=在每轮交易循环中调用 Telegram 命令轮询，使 runtime config 变更在下一轮迭代生效。
+- path=tests/test_runtime_overrides.py; kind=test; symbol=RuntimeOverrides tests; lines=1-260; reason=覆盖 overrides 容器、合法值校验与 effective getters 行为，为 8.4 的 E2E 验证提供基础信心。
+- path=tests/test_telegram_config_commands.py; kind=test; symbol=Config command tests; lines=1-280; reason=系统性测试 `/config list|get|set` 的正常与错误路径、与 runtime overrides 集成，是 E2E 行为的单元级保障。
+- path=tests/test_notifications_telegram_commands.py; kind=test; symbol=Telegram command wiring tests; lines=1-260; reason=（如存在集成用例）验证 `process_telegram_commands` 到具体 handler 的完整流水线。
+    ]]></code>
+
+    <dependencies><![CDATA[
+- ecosystem=python; manifest=requirements.txt; packages=
+  - python-binance==1.0.19
+  - pandas==2.2.3
+  - numpy==2.1.3
+  - requests==2.31.0
+  - python-dotenv==1.0.0
+  - colorama==0.4.6
+  - streamlit==1.38.0
+  - hyperliquid-python-sdk>=0.9.0
+  - eth-account>=0.10.0
+  - ccxt
+  - streamlit-autorefresh
+  - cryptography
+    ]]></dependencies>
+  </artifacts>
+
+  <constraints><![CDATA[
+- runtime overrides 层的优先级必须保持为：runtime override > 环境变量 > 默认值，所有配置读取通过 `config.settings` 提供的 `get_effective_*` 系列函数完成，禁止在业务代码中直接访问 `os.environ`。
+- `/config` 命令仅允许修改 `OVERRIDE_WHITELIST` 中的 4 个 key（TRADING_BACKEND, MARKET_DATA_BACKEND, TRADEBOT_INTERVAL, TRADEBOT_LLM_TEMPERATURE），并必须通过 `validate_override_value` 进行值校验。
+- `/config set` 必须在管理员 user_id 权限校验通过后才执行，且所有成功修改都要写入 `CONFIG_AUDIT` 日志，日志中禁止包含 API Key / 私钥等敏感信息。
+- E2E 验证不得依赖修改 `.env` 文件，所有运行时变更仅通过 overrides 完成，进程重启后配置应回退到 `.env` / 默认值。
+- 新增脚本或测试应位于 `scripts/` 或 `tests/` 目录中，并遵守现有 pytest 与命名约定（`test_*.py`）。
+- 任何对 trading backend 或 interval 行为的变更都需要保证现有单元测试与回归测试（特别是 runtime overrides 与 Telegram 命令相关测试）仍然通过。
+  ]]></constraints>
+
+  <interfaces><![CDATA[
+- name=/config list; kind=Telegram command; signature="/config list"; path=notifications/telegram_commands.py; description=列出当前支持远程修改的 4 个配置项及其当前生效值，使用 effective getters 与 overrides 层。
+- name=/config get &lt;KEY&gt;; kind=Telegram command; signature="/config get &lt;KEY&gt;"; path=notifications/telegram_commands.py; description=返回指定 key 的当前值与合法取值范围 / 枚举，并对非法 key 提示可用列表。
+- name=/config set &lt;KEY&gt; &lt;VALUE&gt;; kind=Telegram command; signature="/config set &lt;KEY&gt; &lt;VALUE&gt;"; path=notifications/telegram_commands.py; description=在管理员权限校验通过且 value 合法时，调用 `set_runtime_override` 更新 runtime config，并记录审计日志。
+- name=get_effective_trading_backend; kind=python function; signature="get_effective_trading_backend() -> str"; path=config/settings.py; description=综合 overrides 与 env 返回当前生效的 TRADING_BACKEND，用于驱动 bot 的交易后端选择。
+- name=get_effective_interval; kind=python function; signature="get_effective_interval() -> str"; path=config/settings.py; description=返回当前交易主循环 interval，E2E 验证可通过该函数或日志验证 `/config set TRADEBOT_INTERVAL` 的生效情况。
+- name=get_effective_llm_temperature; kind=python function; signature="get_effective_llm_temperature() -> float"; path=config/settings.py; description=返回运行时 LLM temperature（含 overrides），用于在 LLM 客户端中控制采样行为。
+  ]]></interfaces>
+
+  <tests>
+    <standards><![CDATA[
+- 测试使用 pytest，所有测试文件位于 `tests/` 目录并遵循 `test_*.py` 命名约定。
+- 配置与 runtime overrides 行为由 `tests/test_config_and_env.py` 与 `tests/test_runtime_overrides.py` 负责验证，Telegram `/config` 命令行为由 `tests/test_telegram_config_commands.py` 覆盖。
+- 运行 `./scripts/run_tests.sh` 可执行完整测试套件，Story 8.2 与 8.3 已在 Dev Notes 中记录全量通过（>700 个用例），8.4 需要在此基础上新增或扩展 E2E / 集成测试而不破坏现有用例。
+    ]]></standards>
+    <locations><![CDATA[
+- tests/
+- tests/test_runtime_overrides.py
+- tests/test_telegram_config_commands.py
+- tests/test_notifications_telegram_commands.py
+- scripts/run_tests.sh
+    ]]></locations>
+    <ideas><![CDATA[
+- AC1: 编写集成测试或手工步骤脚本，启动 bot（paper 模式，启用 Telegram），通过 `/config set` 修改至少 2 个配置项（例如 TRADEBOT_INTERVAL、TRADEBOT_LLM_TEMPERATURE），然后在下一轮迭代中通过日志与 `get_effective_*` 验证新值已生效。
+- AC2: 在完成一次 `/config set` 后停止 bot，再次启动时验证 effective 配置已回退到 `.env` / 默认值（可通过调用 `get_effective_*` 或检查日志前几轮输出）。
+- AC3: 为 README / 配置文档新增小节后，可通过轻量测试或静态检查（如 grep）验证文档中出现 "Runtime Config"、"/config list|get|set"、4 个 key 名称及权限/风险提示。
+- AC4: 在新增 E2E/集成测试后运行 `./scripts/run_tests.sh`，并在 Story Dev Agent Record 中记录通过的测试套件摘要和新增测试文件列表。
+    ]]></ideas>
+  </tests>
+</story-context>

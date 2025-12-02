@@ -1,6 +1,8 @@
 import unittest
 from unittest import mock
 
+from config.runtime_overrides import set_runtime_override, reset_runtime_overrides
+
 import bot
 
 
@@ -270,6 +272,51 @@ class CollectPromptMarketDataTests(unittest.TestCase):
         with mock.patch("bot.get_market_data_client", return_value=_StubClient()):
             result = bot.collect_prompt_market_data("BTCUSDT")
         self.assertIsNone(result)
+
+
+class RuntimeIntervalIntegrationTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        """Reset runtime overrides after each test to avoid side effects."""
+        reset_runtime_overrides()
+
+    def test_fetch_market_data_uses_effective_interval_override(self) -> None:
+        """bot.fetch_market_data 应该使用 get_effective_interval 派生的 interval。"""
+        # 设置 runtime override，将 TRADEBOT_INTERVAL 改为 1h
+        reset_runtime_overrides()
+        set_runtime_override("TRADEBOT_INTERVAL", "1h")
+
+        captured: dict[str, str] = {}
+
+        class _StubClient:
+            def get_klines(self, symbol, interval, limit):
+                captured["interval"] = interval
+                # 返回一行最小但结构合法的 kline 数据
+                return [
+                    [
+                        1000,
+                        "1.0",
+                        "2.0",
+                        "0.5",
+                        "1.5",
+                        "10.0",
+                        2000,
+                        "20.0",
+                        5,
+                        None,
+                        None,
+                        None,
+                    ]
+                ]
+
+            def get_funding_rate_history(self, symbol, limit):
+                return [0.0]
+
+        with mock.patch("bot.get_market_data_client", return_value=_StubClient()):
+            result = bot.fetch_market_data("BTCUSDT")
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(captured.get("interval"), "1h")
 
 
 if __name__ == "__main__":  # pragma: no cover

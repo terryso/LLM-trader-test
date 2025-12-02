@@ -122,6 +122,46 @@ The signals use emojis (🟢 for LONG, 🔴 for SHORT, ✅ for profit, ❌ for l
 
 Leave the variables empty to run without Telegram.
 
+### Runtime Config & /config Commands
+
+When `TELEGRAM_ADMIN_USER_ID` is configured in `.env` (set to your Telegram user ID), you can adjust a small set of critical runtime settings **without restarting the bot** via the `/config` commands:
+
+- `/config list` – shows all whitelisted runtime config keys and their **effective values** (including any overrides).
+- `/config get KEY` – shows details for a specific key, including the current value and valid range or enum.
+- `/config set KEY VALUE` – sets an in-memory runtime override; only the admin user is allowed to use this and every successful change is audit-logged.
+
+The 4 supported keys (matching the whitelist in `config/runtime_overrides.py`) are:
+
+- `TRADING_BACKEND`
+  - Meaning: intended trading execution backend.
+  - Allowed values: `paper`, `hyperliquid`, `binance_futures`, `backpack_futures`.
+  - Notes: the execution engine is initialised on startup based on this value; **changing it at runtime does not hot-swap the backend in the current process**. It is mainly useful to inspect/prepare config for the next restart.
+- `MARKET_DATA_BACKEND`
+  - Meaning: market data source.
+  - Allowed values: `binance`, `backpack`.
+  - Notes: the market data client is initialised and cached on startup; changing this key at runtime mostly affects `get_effective_*` output, while the actual backend should be switched by restarting the bot.
+- `TRADEBOT_INTERVAL`
+  - Meaning: primary trading loop interval (e.g. `15m`, `1h`).
+  - Allowed values: `1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`, `6h`, `8h`, `12h`, `1d`.
+  - Effect:
+    - After `/config set TRADEBOT_INTERVAL 1m`, the change takes effect **from the next iteration**.
+    - It influences:
+      - The main loop sleep / log message (`Waiting XXXs...`).
+      - The time step used when computing the Sortino ratio.
+      - The timeframe description and candle interval used when building the LLM prompt and indicators.
+- `TRADEBOT_LLM_TEMPERATURE`
+  - Meaning: LLM sampling temperature.
+  - Valid range: `0.0` – `2.0` (out-of-range values are rejected or ignored and the env/default is used instead).
+  - Effect:
+    - After `/config set TRADEBOT_LLM_TEMPERATURE 1.2`, the **very next LLM call** uses the new temperature.
+    - The value is included in the request payload and recorded in `data/ai_messages.csv` as `metadata.temperature` for later analysis.
+
+Permissions & safety notes:
+
+- Only the admin user (`TELEGRAM_ADMIN_USER_ID`) can successfully execute `/config set`; non-admins will see a permission error and the attempt is logged.
+- All runtime changes live inside the in-memory `RuntimeOverrides` container and **are never written back to `.env`**. After a process restart, overrides are discarded and the config falls back to `.env` / defaults.
+- Prefer testing `/config` in paper mode or with very small real positions first. Avoid extreme temperatures or very short intervals that could make the bot overly aggressive, and remember that both LLM calls and trading activity have real cost.
+
 ## Performance Metrics
 
 The console summary and dashboard track both realized and unrealized performance:

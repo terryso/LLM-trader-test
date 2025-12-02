@@ -315,6 +315,46 @@ docker run --rm -it \
 
 配置完成后，每次迭代、开平仓、异常告警等信息都会推送到你的 Telegram。
 
+### 6.3 Runtime Config & /config 命令
+
+运行过程中，如果已经配置好 Telegram 管理员（`.env` 中设置 `TELEGRAM_ADMIN_USER_ID`，值为你的 Telegram user_id），可以通过 `/config` 命令在**不重启 Bot** 的前提下临时调整部分关键配置。
+
+- `/config list`：列出所有支持的运行时配置项及其**当前生效值**（已经包含 runtime overrides 的结果）。
+- `/config get KEY`：查看某个配置项的详情，包括当前值和合法取值说明。
+- `/config set KEY VALUE`：设置运行时覆盖值（runtime override），仅管理员可用，并会写入审计日志。
+
+当前支持的 4 个配置项为（与 `config/runtime_overrides.py` 中的白名单一致）：
+
+- `TRADING_BACKEND`
+  - 含义：交易执行后端
+  - 合法值：`paper` / `hyperliquid` / `binance_futures` / `backpack_futures`
+  - 说明：决定 Bot *打算* 使用哪个执行后端；目前执行引擎在启动时根据该值初始化，**运行中修改不会在当前进程中热切换 backend**，主要用于检查/规划下一次重启生效的配置。
+- `MARKET_DATA_BACKEND`
+  - 含义：行情数据源
+  - 合法值：`binance` / `backpack`
+  - 说明：决定 K 线与价格数据来自哪个后端；当前实现中 market data client 会在启动时初始化并缓存，运行中修改主要用于观测 `get_effective_*` 行为，**实际切换建议在重启后完成**。
+- `TRADEBOT_INTERVAL`
+  - 含义：交易循环的主时间框架（如 `15m`、`1h`）
+  - 合法值：`1m`, `3m`, `5m`, `15m`, `30m`, `1h`, `2h`, `4h`, `6h`, `8h`, `12h`, `1d`
+  - 生效方式：
+    - 通过 `/config set TRADEBOT_INTERVAL 1m` 等命令设置后，**下一轮迭代开始即生效**；
+    - 会影响：
+      - 主循环 `_run_iteration` 的休眠时间（日志中 `Waiting XXXs...` 的数值）；
+      - 计算 Sortino Ratio 时的时间粒度；
+      - 构造给 LLM 的 prompt 中的 timeframe 描述，以及用于指标计算的 K 线间隔。
+- `TRADEBOT_LLM_TEMPERATURE`
+  - 含义：LLM 采样温度
+  - 合法范围：`0.0` – `2.0`（超出范围会被拒绝或忽略，沿用 env/default）
+  - 生效方式：
+    - 通过 `/config set TRADEBOT_LLM_TEMPERATURE 1.2` 等命令设置后，**下一次 LLM 调用立即使用新的温度**；
+    - 该值会体现在发送给 LLM 的请求 payload 中，并记录在 `data/ai_messages.csv` 的 metadata.temperature 字段中，方便回溯决策环境。
+
+权限与风险提示：
+
+- 只有 `TELEGRAM_ADMIN_USER_ID` 对应的管理员账号可以成功执行 `/config set`，普通用户调用会被拒绝并在日志中记录。
+- 所有运行时修改都通过 `RuntimeOverrides` 容器保存在内存中，**不会自动写回 `.env`**；一旦进程重启，所有 runtime overrides 会被丢弃，配置会回到 `.env` / 默认值。
+- 建议在纸上交易模式或小仓位下先验证 `/config` 行为，再在实盘环境中使用；不要通过过大的 temperature / 过短的 interval 让 LLM 行为过于激进，注意 API 费用与交易风险。
+
 ---
 
 ## 7. 常见使用场景示例（Backpack 刷量）

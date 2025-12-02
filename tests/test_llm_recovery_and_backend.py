@@ -4,6 +4,8 @@ import os
 import unittest
 from unittest import mock
 
+from config.runtime_overrides import set_runtime_override, reset_runtime_overrides
+
 import bot
 
 
@@ -64,6 +66,7 @@ class CallDeepseekApiRecoveryTests(unittest.TestCase):
         else:
             os.environ["LLM_API_KEY"] = self._orig_env
         importlib.reload(bot)
+        reset_runtime_overrides()
 
     def test_call_deepseek_api_uses_recovery_on_json_decode_error(self) -> None:
         # 构造一个 choices[0].message.content，其中 JSON 格式有问题，触发 JSONDecodeError
@@ -104,6 +107,43 @@ class CallDeepseekApiRecoveryTests(unittest.TestCase):
         # 应该记录 warning/notify，但这里我们只检查 notify_error 被调用
         self.assertTrue(mock_notify.called)
         mock_log_decisions.assert_called_once_with(recovered_decisions)
+
+    def test_call_deepseek_api_uses_effective_temperature_override(self) -> None:
+        # 设置 runtime override 的温度，并验证请求 payload 中的 temperature
+        reset_runtime_overrides()
+        set_runtime_override("TRADEBOT_LLM_TEMPERATURE", "1.5")
+
+        class _DummyResponse:
+            status_code = 200
+
+            def json(self_inner):
+                return {
+                    "id": "resp-1",
+                    "usage": {},
+                    "choices": [
+                        {
+                            "message": {"content": '{"ETH": {"signal": "hold"}}'},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                }
+
+        with mock.patch("bot.requests.post", return_value=_DummyResponse()) as mock_post:
+            with mock.patch("bot.notify_error") as mock_notify:
+                with mock.patch("bot._log_llm_decisions"):
+                    with mock.patch("bot.log_ai_message"):
+                        decisions = bot.call_deepseek_api("prompt-text")
+
+        # 不应该触发错误通知
+        self.assertFalse(mock_notify.called)
+        # 返回结果不为空（解析成功）
+        self.assertIsNotNone(decisions)
+        assert decisions is not None
+
+        # 验证请求 payload 中的 temperature 已使用 override 值（1.5）
+        payload = mock_post.call_args.kwargs["json"]
+        self.assertIn("temperature", payload)
+        self.assertEqual(payload["temperature"], 1.5)
 
 
 class MarketDataBackendSelectionTests(unittest.TestCase):

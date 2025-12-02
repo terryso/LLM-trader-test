@@ -1,0 +1,185 @@
+<story-context id="LLM-trader-test/story-8-3" v="1.0">
+  <metadata>
+    <epicId>8</epicId>
+    <storyId>3</storyId>
+    <title>权限控制与审计日志</title>
+    <status>ready-for-dev</status>
+    <generatedAt>2025-12-01T16:00:00Z</generatedAt>
+    <generator>BMAD Story Context Workflow (simulated)</generator>
+    <sourceStoryPath>docs/sprint-artifacts/8-3-权限控制与审计日志.md</sourceStoryPath>
+  </metadata>
+
+  <story>
+    <asA>owner of the trading system</asA>
+    <iWant>strict admin-only permissions and audit logs for config changes</iWant>
+    <soThat>sensitive runtime adjustments are controlled and traceable</soThat>
+    <tasks>
+      - Task 1：在 config/settings.py 中引入 Telegram 管理员 user_id 配置读取接口（例如从环境变量或配置中加载），并为命令层提供统一 getter。
+      - Task 2：在 notifications/telegram_commands.py 中的 `/config set` handler 内增加管理员校验逻辑，仅当请求方 user_id 为管理员时才允许执行配置变更，对非管理员返回「无权限修改，只能查看」提示且不调用 set_runtime_override。
+      - Task 3：为每次成功的 `/config set` 调用写入结构化审计日志（时间戳、Telegram user_id、key、old_value、new_value），复用现有 logging 体系或 notifications/logging.py 中的封装，避免泄露敏感信息。
+      - Task 4：为权限控制与审计逻辑新增测试用例（基于 tests/test_telegram_config_commands.py 及相关测试模式），覆盖管理员/非管理员路径、日志内容校验以及与 runtime overrides 的集成行为，并通过 ./scripts/run_tests.sh 回归。
+    </tasks>
+  </story>
+
+  <acceptanceCriteria>
+    - AC1：在配置中支持配置一个管理员 Telegram user_id（或等价机制），供运行时权限判断使用。
+    - AC2：`/config set` 仅在请求方 user_id 匹配管理员配置时才会执行；非管理员调用时返回「无权限修改，只能查看」提示，并确保不会修改任何运行时配置。
+    - AC3：每次成功的 `/config set` 调用都会写入结构化日志，至少包括时间戳、Telegram user_id、key、old_value、new_value，日志级别和格式与现有 logging 体系兼容。
+  </acceptanceCriteria>
+
+  <artifacts>
+    <docs>
+      - path: docs/epics.md
+        title: LLM-trader-test - Epic Breakdown
+        section: Story 8.3 - 权限控制与审计日志
+        snippet: 描述 Epic 8 下的 Story 8.3，要求为 Telegram `/config set` 增加严格的管理员权限控制，并为每次配置变更写入可审计的日志记录，确保运行时配置调整受控且可追踪。
+      - path: docs/epics.md
+        title: LLM-trader-test - Epic Breakdown
+        section: Epic 8 - Telegram 远程运营配置管理（Runtime Config Control）
+        snippet: 说明 Epic 8 的整体目标：通过 Telegram `/config` 命令在运行时调整 TRADING_BACKEND、MARKET_DATA_BACKEND、TRADEBOT_INTERVAL、TRADEBOT_LLM_TEMPERATURE 等关键参数，所有配置变更需要权限校验与日志审计能力。
+      - path: docs/prd.md
+        title: DeepSeek Paper Trading Bot 产品需求文档
+        section: 4.7 Telegram 通知
+        snippet: 描述系统如何通过 Telegram 推送主循环摘要与信号，并在出现错误时发送通知，为在 Telegram 通道内执行敏感操作（如运行时配置变更）提供产品与安全背景。
+      - path: docs/architecture/06-project-structure-and-mapping.md
+        title: 架构 - 项目结构与 PRD 映射
+        section: 6. 项目结构与源码树 / PRD 功能块到架构组件的映射
+        snippet: 给出 config/settings.py、notifications/telegram.py 与 notifications/telegram_commands.py 在整体分层架构中的位置，并将 PRD 的 Telegram 功能映射到具体模块，是选择权限配置落点与命令实现位置的主要参考。
+      - path: docs/architecture/07-implementation-patterns.md
+        title: 架构 - 实现模式与一致性规则
+        section: 7.2 目录与代码结构 / 7.4 通信与耦合模式 / 7.6 位置模式 / 7.7 一致性模式
+        snippet: 规定配置集中在 config/，通知与 Telegram 逻辑集中在 notifications/，测试集中在 tests/，日志使用统一格式并避免泄露敏感信息，为实现基于 Telegram 的权限控制与审计日志提供架构与安全约束。
+      - path: docs/sprint-artifacts/8-1-运行时配置覆盖层-runtime-overrides.md
+        title: Story 8.1 - 运行时配置覆盖层（Runtime Overrides）
+        section: Dev Notes / Dev Agent Record
+        snippet: 记录了 runtime overrides 容器、白名单 key 以及 effective getters 的设计与测试范围，强调所有运行时配置变更应通过公共 API 完成，不直接读写 os.environ，是 8.3 复用 overrides 能力的基础。
+      - path: docs/sprint-artifacts/8-2-telegram-config-命令接口.md
+        title: Story 8.2 - Telegram `/config` 命令接口
+        section: Dev Notes / Dev Agent Record
+        snippet: 详细说明了 `/config list|get|set` 命令的实现、runtime overrides 的集成方式以及后续在 8.3 中增加权限控制与审计日志的预留 hook，是本 Story 的直接前置上下文。
+    </docs>
+
+    <code>
+      - path: config/runtime_overrides.py
+        kind: config-module
+        symbol: RuntimeOverrides, set_runtime_override, get_runtime_override, get_override_whitelist, validate_override_value
+        reason: 定义 runtime overrides 白名单 key、合法取值集合与公共 API；在通过权限校验后，`/config set` 必须复用这些函数完成运行时配置写入与校验，而不是实现平行的状态或校验逻辑。
+      - path: config/settings.py
+        kind: config-module
+        symbol: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, get_effective_trading_backend, get_effective_market_data_backend, get_effective_interval, get_effective_llm_temperature
+        reason: 集中管理 Telegram 相关配置与 4 个白名单配置项的 effective getters，是实现管理员 user_id 配置读取以及在权限逻辑中获取当前生效配置值的主要入口。
+      - path: notifications/telegram_commands.py
+        kind: telegram-commands
+        symbol: TelegramCommand, TelegramCommandHandler, process_telegram_commands, handle_config_command, handle_config_set_command
+        reason: 提供 Telegram 命令解析、chat 过滤与 `/config` list/get/set handler 实现；本 Story 需要在 `handle_config_set_command` 或等价入口中接入管理员权限校验与审计日志记录。
+      - path: notifications/logging.py
+        kind: logging-module
+        symbol: notify_error, emit_entry_console_log, emit_close_console_log, log_ai_message
+        reason: 封装了统一的日志与错误通知行为；审计日志可以复用现有 logging 配置与 notify_error 风格，确保日志格式与其它关键事件一致，并可选地通过 Telegram 转发重要安全事件。
+      - path: notifications/telegram.py
+        kind: telegram-notifications
+        symbol: send_telegram_message, strip_ansi_codes
+        reason: 封装 Telegram 消息发送与 Markdown 转义逻辑；`/config set` 的成功/拒绝提示与潜在安全告警需要通过该模块发送，确保消息格式与其它命令保持一致。
+      - path: tests/test_telegram_config_commands.py
+        kind: test
+        symbol: TestConfigListCommand, TestConfigGetCommand, TestConfigSetCommand
+        reason: 已覆盖 `/config list|get|set` 的核心行为与错误路径，为在相同测试文件中扩展管理员/非管理员场景以及审计日志断言提供直接模板。
+      - path: tests/test_notifications_telegram_commands.py
+        kind: test
+        symbol: TestCommandParsing, TestChatIdFiltering, TestHandleKillCommand, TestHandleResumeCommand
+        reason: 覆盖 TelegramCommandHandler 的命令解析与 chat 过滤行为，以及已有 /kill、/resume 等命令的 AC；新增权限逻辑时应参考这些测试模式，确保 /config 与其它命令在 chat 过滤和错误处理上的一致性。
+      - path: tests/test_notifications_telegram.py
+        kind: test
+        symbol: TestSendTelegramMessage, TestSendEntrySignalToTelegram
+        reason: 测试 Telegram 发送逻辑与 Markdown 转义，保证在各种异常条件下不会抛出未捕获异常；`/config set` 的反馈消息与潜在审计通知需要兼容这些行为。
+    </code>
+
+    <dependencies>
+      - ecosystem: python
+        manifests:
+          - path: requirements.txt
+        packages:
+          - name: python-dotenv
+            version: "1.0.0"
+          - name: requests
+            version: "2.31.0"
+          - name: colorama
+            version: "0.4.6"
+          - name: streamlit
+            version: "1.38.0"
+          - name: hyperliquid-python-sdk
+            version: ">=0.9.0"
+          - name: eth-account
+            version: ">=0.10.0"
+    </dependencies>
+  </artifacts>
+
+  <constraints>
+    - `/config set` 必须是管理员专属操作：调用方 Telegram user_id 必须与配置中的管理员 user_id 匹配，否则只能执行 list/get 等只读命令。
+    - 权限控制与审计逻辑必须复用 config/runtime_overrides.py 和 config/settings.py 暴露的公共 API，不得直接读写 os.environ 或 RuntimeOverrides 内部状态，以保持与 Story 8.1 行为一致。
+    - 审计日志必须通过标准 logging 体系或 notifications/logging.py 输出，使用统一的日志格式，并避免在日志中写入 API Key 等敏感信息，可以仅记录配置 key 与旧/新值的摘要。
+    - 所有 `/config` 命令处理中的异常必须被捕获并记录日志，不能影响交易主循环；任何 Telegram 或网络错误都不应导致进程退出。
+    - 新增的权限判断与日志逻辑应保持在 notifications 层，配置层不直接依赖 Telegram，实现分层解耦并避免循环导入。
+    - 本 Story 在实现权限与审计时应保持与现有命令（/kill、/resume、/status、/help 等）一致的用户体验和错误文案风格，命令帮助信息需在 /help 输出中更新。
+  </constraints>
+
+  <interfaces>
+    - name: TelegramCommandHandler
+      kind: python-class
+      signature: "class TelegramCommandHandler: ..."
+      path: notifications/telegram_commands.py
+    - name: process_telegram_commands
+      kind: python-function
+      signature: "process_telegram_commands(commands: list[TelegramCommand], command_handlers: Optional[dict[str, Callable[[TelegramCommand], None]]] = None) -> None"
+      path: notifications/telegram_commands.py
+    - name: handle_config_set_command
+      kind: python-function
+      signature: "handle_config_set_command(cmd: TelegramCommand) -> None"
+      path: notifications/telegram_commands.py
+    - name: set_runtime_override
+      kind: python-function
+      signature: "set_runtime_override(key: str, value: Any, validate: bool = True) -> tuple[bool, Optional[str]]"
+      path: config/runtime_overrides.py
+    - name: get_override_whitelist
+      kind: python-function
+      signature: "get_override_whitelist() -> set[str]"
+      path: config/runtime_overrides.py
+    - name: get_effective_trading_backend
+      kind: python-function
+      signature: "get_effective_trading_backend() -> str"
+      path: config/settings.py
+    - name: get_effective_market_data_backend
+      kind: python-function
+      signature: "get_effective_market_data_backend() -> str"
+      path: config/settings.py
+    - name: get_effective_interval
+      kind: python-function
+      signature: "get_effective_interval() -> str"
+      path: config/settings.py
+    - name: get_effective_llm_temperature
+      kind: python-function
+      signature: "get_effective_llm_temperature() -> float"
+      path: config/settings.py
+    - name: notify_error
+      kind: python-function
+      signature: "notify_error(message: str, metadata: Optional[Dict[str, Any]] = None, log_error: bool = True, log_ai_message_fn: Optional[Callable[[str, str, str, Optional[Dict[str, Any]]], None]] = None, send_telegram_message_fn: Optional[Callable[[str, Optional[str], Optional[str]], None]] = None) -> None"
+      path: notifications/logging.py
+  </interfaces>
+
+  <tests>
+    <standards>
+      - 遵循 docs/architecture/07-implementation-patterns.md 中关于配置集中在 config/、通知集中在 notifications/、测试集中在 tests/ 的位置模式，使用 pytest 风格编写测试。
+      - 新增权限控制与审计日志相关测试时，应复用 tests/test_telegram_config_commands.py 与 tests/test_notifications_telegram_commands.py 中对命令解析、chat 过滤与错误处理的测试模式，并通过 ./scripts/run_tests.sh 运行全量测试，确保现有测试保持通过。
+    </standards>
+    <locations>
+      - tests/
+      - scripts/run_tests.sh
+    </locations>
+    <ideas>
+      - 针对 AC1：为管理员 user_id 配置与读取实现编写单元测试，验证在配置缺失、非法值以及正常配置场景下的行为，并确保命令层能正确获取该配置。
+      - 针对 AC2：为 `/config set` 编写管理员与非管理员路径测试，断言仅管理员请求会调用 set_runtime_override 且成功修改配置，非管理员请求只返回「无权限修改，只能查看」提示且不会更改任何运行时值。
+      - 针对 AC3：为审计日志编写测试，模拟多次成功的 `/config set` 调用，验证日志中包含时间戳、Telegram user_id、key、old_value、new_value 字段，且日志格式与 logging 配置一致、不包含敏感 secrets。
+      - 为错误路径编写测试（非法 key/value、runtime_overrides 返回错误、Telegram 发送失败等），验证错误被记录并通过 notify_error 或等价机制处理，但不会抛出未捕获异常或终止主循环。
+    </ideas>
+  </tests>
+</story-context>

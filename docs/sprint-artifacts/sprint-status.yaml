@@ -87,9 +87,9 @@ development_status:
   # === Epic 8: Telegram 远程运营配置管理（Runtime Config Control） ===
   epic-8: backlog
   8-1-运行时配置覆盖层-runtime-overrides: done
-  8-2-telegram-config-命令接口: backlog
-  8-3-权限控制与审计日志: backlog
-  8-4-端到端验证与文档更新: backlog
+  8-2-telegram-config-命令接口: done
+  8-3-权限控制与审计日志: done
+  8-4-端到端验证与文档更新: ready-for-dev
   epic-8-retrospective: optional
 
   # === Epic 9: 可配置交易对 Universe & Telegram 管理 ===

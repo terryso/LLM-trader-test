@@ -373,6 +373,7 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 TELEGRAM_SIGNALS_CHAT_ID = os.getenv("TELEGRAM_SIGNALS_CHAT_ID", "")
+TELEGRAM_ADMIN_USER_ID = os.getenv("TELEGRAM_ADMIN_USER_ID", "")
 
 HYPERLIQUID_WALLET_ADDRESS = os.getenv("HYPERLIQUID_WALLET_ADDRESS", "")
 HYPERLIQUID_PRIVATE_KEY = os.getenv("HYPERLIQUID_PRIVATE_KEY", "")
@@ -736,6 +737,23 @@ def get_effective_llm_temperature() -> float:
     
     # Fall back to module-level value (loaded from env at import time)
     return LLM_TEMPERATURE
+
+
+def get_telegram_admin_user_id() -> str:
+    """
+    Get the Telegram admin user ID for permission control.
+    
+    This function returns the configured admin user ID that is authorized
+    to execute privileged Telegram commands like /config set.
+    
+    Returns:
+        Admin user ID string, or empty string if not configured.
+        
+    Note:
+        When empty, all /config set commands will be rejected with a
+        permission denied message. This is a secure default.
+    """
+    return TELEGRAM_ADMIN_USER_ID.strip()
 
 
 # ───────────────────────── CSV FILES ─────────────────────────
