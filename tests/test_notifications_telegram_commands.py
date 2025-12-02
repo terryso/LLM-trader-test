@@ -35,6 +35,7 @@ from notifications.telegram_commands import (
     handle_help_command,
     handle_unknown_command,
     create_kill_resume_handlers,
+    register_telegram_commands,
 )
 
 
@@ -181,6 +182,42 @@ class TestTelegramCommandDataclass:
         )
         assert cmd.command == "resume"
         assert cmd.args == ["confirm"]
+
+
+class TestRegisterTelegramCommands:
+    """Tests for register_telegram_commands helper."""
+
+    @patch("notifications.telegram_commands.requests.post")
+    def test_register_telegram_commands_sends_expected_payload(
+        self,
+        mock_post: MagicMock,
+        bot_token: str,
+    ) -> None:
+        """register_telegram_commands should call setMyCommands with commands from registry."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"ok": True, "result": True}
+        mock_post.return_value = mock_response
+
+        register_telegram_commands(bot_token)
+
+        assert mock_post.called
+        args, kwargs = mock_post.call_args
+        assert "setMyCommands" in args[0]
+        payload = kwargs.get("json", {})
+        commands = payload.get("commands", [])
+        names = {item["command"] for item in commands}
+        for expected in {"status", "risk", "kill", "resume", "reset_daily", "config", "help"}:
+            assert expected in names
+
+    @patch("notifications.telegram_commands.requests.post")
+    def test_register_telegram_commands_skips_without_token(
+        self,
+        mock_post: MagicMock,
+    ) -> None:
+        """register_telegram_commands should do nothing when bot_token is empty."""
+        register_telegram_commands("")
+        mock_post.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════════════════

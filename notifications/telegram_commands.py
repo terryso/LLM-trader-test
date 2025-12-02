@@ -413,6 +413,55 @@ def _build_help_message(risk_control_enabled: bool = True) -> str:
     return "\n".join(lines)
 
 
+def register_telegram_commands(bot_token: str) -> None:
+    """Register bot commands with Telegram using the setMyCommands API."""
+    if not bot_token:
+        return
+    commands_map: Dict[str, str] = {}
+    for cmd, desc in COMMAND_REGISTRY:
+        raw = cmd.split()[0].replace("\\", "")
+        if not raw.startswith("/"):
+            continue
+        raw = raw[1:]
+        if "@" in raw:
+            raw = raw.split("@")[0]
+        name = raw.lower()
+        if not name or name in commands_map:
+            continue
+        description = desc.replace("\\", "")
+        commands_map[name] = description
+    if not commands_map:
+        return
+    url = f"https://api.telegram.org/bot{bot_token}/setMyCommands"
+    payload: Dict[str, Any] = {
+        "commands": [
+            {"command": name, "description": description}
+            for name, description in commands_map.items()
+        ],
+    }
+    try:
+        response = requests.post(url, json=payload, timeout=10)
+        if response.status_code != 200:
+            logging.warning(
+                "Failed to set Telegram bot commands: HTTP %d | response=%s",
+                response.status_code,
+                response.text[:200] if response.text else "(empty)",
+            )
+            return
+        data = response.json()
+        if not data.get("ok", False):
+            logging.warning(
+                "Telegram setMyCommands returned ok=false: %s",
+                data.get("description", "unknown error"),
+            )
+    except requests.exceptions.Timeout:
+        logging.warning("Telegram setMyCommands request timed out")
+    except requests.exceptions.RequestException as exc:
+        logging.warning("Telegram setMyCommands request failed: %s", exc)
+    except ValueError as exc:
+        logging.warning("Failed to parse Telegram setMyCommands response: %s", exc)
+
+
 # ═══════════════════════════════════════════════════════════════════
 # COMMAND RESULT DATACLASS (Story 7.4.2)
 # ═══════════════════════════════════════════════════════════════════

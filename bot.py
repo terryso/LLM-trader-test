@@ -137,6 +137,7 @@ from notifications.telegram_commands import (
     create_command_handler,
     process_telegram_commands,
     create_kill_resume_handlers,
+    register_telegram_commands,
 )
 from core.trading_loop import log_risk_control_event
 
@@ -772,6 +773,7 @@ def main() -> None:
     # Log Telegram status
     if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         logging.info("Telegram notifications enabled (chat: %s).", TELEGRAM_CHAT_ID)
+        register_telegram_commands(TELEGRAM_BOT_TOKEN)
     else:
         logging.info("Telegram notifications disabled; missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID.")
     
