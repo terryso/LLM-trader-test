@@ -12,6 +12,7 @@ import logging
 
 from exchange.base import CloseResult, EntryResult
 from exchange.factory import get_exchange_client
+from config import resolve_symbol_for_coin
 
 
 # Minimum reward-to-fee ratio and absolute expected reward (USD) required
@@ -447,6 +448,8 @@ def route_live_close(
             return None
         symbol = coin_to_symbol.get(coin)
         if not symbol:
+            symbol = resolve_symbol_for_coin(coin)
+        if not symbol:
             logging.error("%s: No Binance symbol mapping found; position remains open.", coin)
             return None
         try:
@@ -527,6 +530,8 @@ def check_stop_loss_take_profit_for_positions(
 
     for coin in list(positions.keys()):
         symbol = next((s for s, c in symbol_to_coin.items() if c == coin), None)
+        if not symbol:
+            symbol = resolve_symbol_for_coin(coin)
         if not symbol:
             logging.debug(
                 "No symbol mapping found for coin %s when checking stop loss / take profit",

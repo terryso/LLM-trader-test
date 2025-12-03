@@ -155,7 +155,7 @@ class PnlAndEquityTests(unittest.TestCase):
                 "quantity": 1.0,
                 "margin": 100.0,
             },
-            # Coin without symbol mapping should be ignored by calculate_total_equity
+            # 现在 FOO 也会通过规则映射为 FOOUSDT 并计入总权益
             "FOO": {
                 "side": "long",
                 "entry_price": 50.0,
@@ -169,11 +169,15 @@ class PnlAndEquityTests(unittest.TestCase):
 
         total_equity = bot.calculate_total_equity()
 
-        mock_fetch.assert_called_once_with("BTCUSDT")
+        # BTC 必须以 BTCUSDT 被请求一次；其他 coin（例如 FOO→FOOUSDT）现在也会走规则映射，
+        # 因此不再要求只调用一次，而是断言 BTCUSDT 至少被调用一次。
+        mock_fetch.assert_any_call("BTCUSDT")
 
         # Base = balance + total_margin = 1000 + (100 + 50) = 1150
-        # Unrealized PnL for BTC = (100 - 90) * 1 = 10 → total = 1160
-        self.assertAlmostEqual(total_equity, 1160.0)
+        # Unrealized PnL for BTC = (100 - 90) * 1 = 10
+        # Unrealized PnL for FOO = (100 - 50) * 1 = 50
+        # total = 1150 + 10 + 50 = 1210
+        self.assertAlmostEqual(total_equity, 1210.0)
 
     def test_calculate_sortino_ratio_requires_enough_data(self) -> None:
         self.assertIsNone(bot.calculate_sortino_ratio([], 60.0))

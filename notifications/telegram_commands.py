@@ -1826,48 +1826,114 @@ def handle_config_command(cmd: TelegramCommand) -> CommandResult:
 # ═══════════════════════════════════════════════════════════════════
 
 
+_SYMBOLS_AUDIT_MAX_REASON_LENGTH = 512
+
+
+def _sanitize_reason(
+    reason: Optional[str], max_length: int = _SYMBOLS_AUDIT_MAX_REASON_LENGTH
+) -> str:
+    """Sanitize reason string for logging.
+    
+    Replaces newlines/carriage returns with spaces and truncates if too long.
+    
+    Args:
+        reason: Raw reason string.
+        max_length: Maximum length before truncation.
+        
+    Returns:
+        Sanitized reason string safe for single-line logging.
+    """
+    if not reason:
+        return "unknown"
+    # Replace newlines and carriage returns with spaces
+    sanitized = reason.replace("\n", " ").replace("\r", " ")
+    # Collapse multiple spaces
+    sanitized = " ".join(sanitized.split())
+    # Truncate if too long, reserving space for suffix
+    if len(sanitized) > max_length:
+        suffix = "... (truncated)"
+        cutoff = max(0, max_length - len(suffix))
+        sanitized = sanitized[:cutoff] + suffix
+    return sanitized
+
+
 def _log_symbols_audit(
     *,
     action: str,
     symbol: str,
     user_id: str,
     chat_id: str,
-    old_universe: List[str],
-    new_universe: List[str],
+    old_universe: Optional[List[str]] = None,
+    new_universe: Optional[List[str]] = None,
     success: bool,
+    reason_code: Optional[str] = None,
+    reason_detail: Optional[str] = None,
 ) -> None:
     """Write structured audit log for symbol universe changes.
     
     This function logs Universe modifications in a structured format
-    for security auditing and compliance purposes.
+    for security auditing and compliance purposes (Story 9.4 AC3).
+    
+    Log levels:
+    - INFO: Successful add/remove operations
+    - WARNING: Denied modifications (non-admin, invalid symbol)
+    
+    Note: Internal errors should be logged separately by the caller using
+    logging.error() with appropriate context.
     
     Args:
-        action: Action type (ADD or REMOVE).
+        action: Action type (ADD, REMOVE, or DENY).
         symbol: The symbol being added or removed.
         user_id: Telegram user ID of the requester.
         chat_id: Chat ID where the command was received.
-        old_universe: Universe before the change.
-        new_universe: Universe after the change.
+        old_universe: Universe before the change (also included for DENY for context).
+        new_universe: Universe after the change (None for DENY).
         success: Whether the change was successful.
+        reason_code: Machine-readable reason code (e.g., "add_permission_denied").
+        reason_detail: Human-readable reason detail (e.g., error message).
     """
     from datetime import datetime, timezone
     
     timestamp = datetime.now(timezone.utc).isoformat()
     
-    # Audit log for symbol universe changes (Story 9.4 alignment)
-    # Using WARNING level as this is a security-relevant event
-    logging.warning(
-        "SYMBOLS_AUDIT | action=%s | symbol=%s | user_id=%s | chat_id=%s | "
-        "old_universe=%s | new_universe=%s | success=%s | timestamp=%s",
-        action,
-        symbol,
-        user_id,
-        chat_id,
-        old_universe,
-        new_universe,
-        success,
-        timestamp,
-    )
+    # Build universe summary strings
+    old_summary = f"{len(old_universe)} symbols" if old_universe is not None else "N/A"
+    new_summary = f"{len(new_universe)} symbols" if new_universe is not None else "N/A"
+    
+    # Story 9.4 AC3 & AC4: Unified audit log format with SYMBOLS_AUDIT prefix
+    # - Successful add/remove: INFO level
+    # - Denied modifications: WARNING level
+    if success:
+        logging.info(
+            "SYMBOLS_AUDIT | action=%s | symbol=%s | user_id=%s | chat_id=%s | "
+            "old_universe=%s | new_universe=%s | success=%s | timestamp=%s",
+            action,
+            symbol,
+            user_id,
+            chat_id,
+            old_summary,
+            new_summary,
+            success,
+            timestamp,
+        )
+    else:
+        # Sanitize reason_detail to prevent log injection and excessive length
+        sanitized_detail = _sanitize_reason(reason_detail)
+        
+        # DENY logs include old_universe for audit context, reason_code for machine parsing
+        logging.warning(
+            "SYMBOLS_AUDIT | action=%s | symbol=%s | user_id=%s | chat_id=%s | "
+            "old_universe=%s | success=%s | reason_code=%s | reason=%s | timestamp=%s",
+            action,
+            symbol,
+            user_id,
+            chat_id,
+            old_summary,
+            success,
+            reason_code or "unknown",
+            sanitized_detail,
+            timestamp,
+        )
 
 
 def _check_symbols_admin_permission(cmd: TelegramCommand) -> tuple[bool, str]:
@@ -1899,27 +1965,9 @@ def _normalize_symbol(symbol: str) -> str:
     return symbol.strip().upper()
 
 
-def validate_symbol_for_universe(symbol: str) -> tuple[bool, str]:
-    """Validate if a symbol is valid for the current MARKET_DATA_BACKEND.
-    
-    This is a placeholder implementation for Story 9.2. The actual validation
-    logic will be implemented in Story 9.3 based on the MARKET_DATA_BACKEND.
-    
-    For now, this function checks if the symbol exists in SYMBOL_TO_COIN,
-    which is the minimal validation required by Story 9.1's subset-only
-    filtering constraint.
-    
-    Args:
-        symbol: Normalized symbol to validate (e.g., "BTCUSDT").
-        
-    Returns:
-        Tuple of (is_valid, error_message).
-        is_valid is True if the symbol is valid.
-        error_message contains the reason if invalid.
-    """
-    from config.universe import validate_symbol_for_universe as _validate_symbol_for_universe
-
-    return _validate_symbol_for_universe(symbol)
+# Symbol validation is delegated to config.universe.validate_symbol_for_universe
+# which in turn uses exchange.symbol_validation for backend-specific checks.
+# See Story 9.3 for implementation details.
 
 
 def handle_symbols_list_command(cmd: TelegramCommand) -> CommandResult:
@@ -2009,6 +2057,23 @@ def handle_symbols_add_command(
     is_admin, admin_user_id = _check_symbols_admin_permission(cmd)
     
     if not is_admin:
+        deny_reason = "admin_not_configured" if not admin_user_id else "not_admin"
+        
+        # Get current universe for audit context
+        current_universe = get_effective_symbol_universe()
+        
+        # Story 9.4 AC3: Audit log for denied modifications
+        _log_symbols_audit(
+            action="DENY",
+            symbol=_normalize_symbol(symbol),
+            user_id=cmd.user_id,
+            chat_id=cmd.chat_id,
+            old_universe=current_universe,
+            success=False,
+            reason_code="add_permission_denied",
+            reason_detail=deny_reason,
+        )
+        
         logging.warning(
             "Telegram /symbols add: permission denied | user_id=%s | "
             "admin_user_id=%s | chat_id=%s | symbol=%s",
@@ -2058,9 +2123,25 @@ def handle_symbols_add_command(
     # ─────────────────────────────────────────────────────────────────
     # Symbol Validation (Story 9.3 interface)
     # ─────────────────────────────────────────────────────────────────
+    from config.universe import validate_symbol_for_universe
     is_valid, error_msg = validate_symbol_for_universe(normalized_symbol)
     
     if not is_valid:
+        # Get current universe for audit context
+        current_universe = get_effective_symbol_universe()
+        
+        # Story 9.4 AC3: Audit log for invalid symbol
+        _log_symbols_audit(
+            action="DENY",
+            symbol=normalized_symbol,
+            user_id=cmd.user_id,
+            chat_id=cmd.chat_id,
+            old_universe=current_universe,
+            success=False,
+            reason_code="add_invalid_symbol",
+            reason_detail=error_msg,
+        )
+        
         message = (
             f"❌ *无效的交易对*\n\n"
             f"*Symbol:* `{_escape_markdown(normalized_symbol)}`\n"
@@ -2183,6 +2264,23 @@ def handle_symbols_remove_command(
     is_admin, admin_user_id = _check_symbols_admin_permission(cmd)
     
     if not is_admin:
+        deny_reason = "admin_not_configured" if not admin_user_id else "not_admin"
+        
+        # Get current universe for audit context
+        current_universe = get_effective_symbol_universe()
+        
+        # Story 9.4 AC3: Audit log for denied modifications
+        _log_symbols_audit(
+            action="DENY",
+            symbol=_normalize_symbol(symbol),
+            user_id=cmd.user_id,
+            chat_id=cmd.chat_id,
+            old_universe=current_universe,
+            success=False,
+            reason_code="remove_permission_denied",
+            reason_detail=deny_reason,
+        )
+        
         logging.warning(
             "Telegram /symbols remove: permission denied | user_id=%s | "
             "admin_user_id=%s | chat_id=%s | symbol=%s",

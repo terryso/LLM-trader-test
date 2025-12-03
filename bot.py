@@ -51,7 +51,7 @@ from config.settings import (
     get_effective_tradebot_loop_enabled,
     BACKPACK_API_PUBLIC_KEY, BACKPACK_API_SECRET_SEED, BACKPACK_API_WINDOW_MS,
 )
-from config import get_effective_coin_universe
+from config import get_effective_coin_universe, resolve_symbol_for_coin
 
 
 def refresh_llm_configuration_from_env() -> None:
@@ -649,7 +649,7 @@ def calculate_total_equity() -> float:
     """Calculate total equity."""
     total = balance + calculate_total_margin()
     for coin in positions:
-        symbol = next((s for s, c in SYMBOL_TO_COIN.items() if c == coin), None)
+        symbol = resolve_symbol_for_coin(coin)
         if symbol:
             data = fetch_market_data(symbol)
             if data:
@@ -737,7 +737,7 @@ def process_ai_decisions(
         signal = decision.get("signal", "hold")
         log_ai_decision(coin, signal, decision.get("justification", ""), decision.get("confidence", 0))
         
-        symbol = COIN_TO_SYMBOL.get(coin)
+        symbol = resolve_symbol_for_coin(coin)
         if not symbol:
             continue
         data = fetch_market_data(symbol)

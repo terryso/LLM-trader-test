@@ -359,6 +359,76 @@ docker run --rm -it \
 - 所有运行时修改都通过 `RuntimeOverrides` 容器保存在内存中，**不会自动写回 `.env`**；一旦进程重启，所有 runtime overrides 会被丢弃，配置会回到 `.env` / 默认值。
 - 建议在纸上交易模式或小仓位下先验证 `/config` 行为，再在实盘环境中使用；不要通过过大的 temperature / 过短的 interval 让 LLM 行为过于激进，注意 API 费用与交易风险。
 
+### 6.4 可配置交易 Universe & Telegram 管理
+
+Bot 支持通过 Telegram `/symbols` 命令动态管理交易 Universe（可交易的币种列表），无需重启即可调整交易范围。
+
+#### 命令用法
+
+- `/symbols list`：查看当前交易 Universe（任何用户可用）
+- `/symbols add SYMBOL`：添加交易对到 Universe（仅管理员）
+- `/symbols remove SYMBOL`：从 Universe 移除交易对（仅管理员）
+
+**示例：**
+
+```
+/symbols list
+/symbols add BTCUSDT
+/symbols remove SOLUSDT
+```
+
+#### Universe 默认来源与覆盖方式
+
+1. **默认 Universe**：由 `config/settings.py` 中的 `SYMBOLS` 列表定义
+2. **运行时覆盖**：通过 `/symbols add/remove` 命令修改，存储在内存中
+3. **重启行为**：进程重启后，Universe 会恢复到默认值
+
+#### Symbol 校验与 MARKET_DATA_BACKEND 的关系
+
+添加新 symbol 时，系统会根据当前 `MARKET_DATA_BACKEND` 进行校验：
+
+- **Binance 后端**：验证 symbol 是否存在于 Binance Futures 市场
+- **Backpack 后端**：用户仍使用 USDT 风格的 symbol（如 `BTCUSDT`），系统内部会自动映射到 Backpack 的 USDC 合约格式（如 `BTC_USDC_PERP`）
+
+#### 删除 Symbol 对持仓与风险管理的影响
+
+**重要行为约定：**
+
+- `/symbols remove` **只影响后续新开仓**，不会强制平掉已有持仓
+- 已有持仓继续由现有 SL/TP、Kill-Switch、每日亏损限制等机制管理
+- 若 Universe 中移除了仍有持仓的 symbol，日志中会有 WARNING 提示（orphaned position）
+
+#### Backtest 与 Paper/Live 的 Universe 解耦
+
+- **回测模式**：使用 `BACKTEST_SYMBOLS` 环境变量或 CLI 参数控制 symbol，与 Telegram `/symbols` 命令完全独立
+- **Paper/Live 模式**：受 `/symbols` 命令和 Universe override 影响
+
+这种设计确保回测结果的可重复性，不会因为运行时的 Universe 调整而改变。
+
+#### 审计日志
+
+所有 `/symbols add/remove` 操作都会记录审计日志，格式如下：
+
+```
+SYMBOLS_AUDIT | action=ADD | symbol=BTCUSDT | user_id=123456 | chat_id=789 | old_universe=5 symbols | new_universe=6 symbols | success=True | timestamp=2024-01-01T12:00:00+00:00
+```
+
+被拒绝的操作（非管理员、无效 symbol）也会记录，包含当前 Universe 上下文：
+
+```
+SYMBOLS_AUDIT | action=DENY | symbol=INVALIDUSDT | user_id=456789 | chat_id=789 | old_universe=5 symbols | success=False | reason_code=add_invalid_symbol | reason=Symbol 'INVALIDUSDT' 不在已知交易对列表中 | timestamp=2024-01-01T12:00:00+00:00
+```
+
+日志字段说明：
+- `reason_code`：机器可读的原因代码（如 `add_permission_denied`、`add_invalid_symbol`）
+- `reason`：人类可读的详细说明
+
+日志级别：
+- 成功的 add/remove：INFO
+- 被拒绝的修改：WARNING
+
+> **注意**：内部异常由调用方使用 `logging.error()` 单独记录，不通过 `SYMBOLS_AUDIT` 前缀。
+
 ---
 
 ## 7. 常见使用场景示例（Backpack 刷量）

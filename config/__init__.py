@@ -107,6 +107,8 @@ from config.universe import (
     get_effective_coin_universe,
     set_symbol_universe,
     clear_symbol_universe_override,
+    resolve_coin_for_symbol,
+    resolve_symbol_for_coin,
 )
 
 __all__ = [
@@ -196,6 +198,8 @@ __all__ = [
     "get_effective_coin_universe",
     "set_symbol_universe",
     "clear_symbol_universe_override",
+    "resolve_coin_for_symbol",
+    "resolve_symbol_for_coin",
     # Effective config getters
     "get_effective_trading_backend",
     "get_effective_market_data_backend",

@@ -46,7 +46,7 @@ from config.settings import (
     TRADES_CSV,
     DECISIONS_CSV,
 )
-from config import get_effective_coin_universe
+from config import get_effective_coin_universe, resolve_symbol_for_coin
 from core.state import (
     get_balance,
     set_balance,
@@ -188,7 +188,7 @@ def calculate_total_equity(fetch_market_data_fn: Callable) -> float:
     total = balance + calculate_total_margin()
 
     for coin in positions:
-        symbol = next((s for s, c in SYMBOL_TO_COIN.items() if c == coin), None)
+        symbol = resolve_symbol_for_coin(coin)
         if not symbol:
             continue
         data = fetch_market_data_fn(symbol)

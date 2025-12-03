@@ -26,7 +26,7 @@ from config.settings import (
     TELEGRAM_SIGNALS_CHAT_ID,
     RISK_CONTROL_ENABLED,
 )
-from config import get_effective_coin_universe
+from config import get_effective_coin_universe, resolve_symbol_for_coin
 from core.metrics import (
     calculate_pnl_for_price,
     format_leverage_display,
@@ -590,7 +590,7 @@ class TradeExecutor:
                 decision.get("confidence", 0),
             )
 
-            symbol = COIN_TO_SYMBOL.get(coin)
+            symbol = resolve_symbol_for_coin(coin)
             if not symbol:
                 logging.debug("No symbol mapping found for coin %s", coin)
                 continue

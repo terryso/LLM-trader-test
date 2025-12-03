@@ -13,7 +13,6 @@ import numpy as np
 import pandas as pd
 
 from config.settings import (
-    SYMBOL_TO_COIN,
     INTERVAL,
     START_CAPITAL,
     EMA_LEN,
@@ -22,7 +21,7 @@ from config.settings import (
     MACD_SLOW,
     MACD_SIGNAL,
 )
-from config import get_effective_symbol_universe
+from config import get_effective_symbol_universe, resolve_coin_for_symbol
 from strategy.snapshot import build_market_snapshot as _strategy_build_market_snapshot
 from strategy.indicators import (
     add_indicator_columns,
@@ -417,9 +416,12 @@ def collect_prompt_market_data(
         open_interest_values = market_client.get_open_interest_history(symbol=symbol, limit=30)
         funding_rates = market_client.get_funding_rate_history(symbol=symbol, limit=30)
 
+        # Derive coin symbol from trading pair, falling back to uppercased symbol
+        coin = resolve_coin_for_symbol(symbol) or str(symbol).strip().upper()
+
         return _strategy_build_market_snapshot(
             symbol=symbol,
-            coin=SYMBOL_TO_COIN[symbol],
+            coin=coin,
             df_execution=df_execution,
             df_structure=df_structure,
             df_trend=df_trend,

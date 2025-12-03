@@ -9,6 +9,7 @@ from config import (
     set_symbol_universe,
     clear_symbol_universe_override,
 )
+from config.universe import validate_symbol_for_universe
 
 
 class SymbolUniverseTests(unittest.TestCase):
@@ -33,10 +34,12 @@ class SymbolUniverseTests(unittest.TestCase):
         symbols = ["ethusdt", "ETHUSDT", "UNKNOWNUSDT"]
         set_symbol_universe(symbols)
         universe = get_effective_symbol_universe()
-        self.assertEqual(universe, ["ETHUSDT"])
+        # 现在 Universe 允许任意 symbol，去重但不过滤 unknown
+        self.assertEqual(universe, ["ETHUSDT", "UNKNOWNUSDT"])
 
         coins = get_effective_coin_universe()
-        self.assertEqual(coins, [SYMBOL_TO_COIN["ETHUSDT"]])
+        # ETHUSDT 通过 SYMBOL_TO_COIN 明确映射，UNKNOWNUSDT 会按 USDT 规则被推导为 UNKNOWN
+        self.assertIn(SYMBOL_TO_COIN["ETHUSDT"], coins)
 
     def test_clear_symbol_universe_override_restores_default(self) -> None:
         set_symbol_universe(["ETHUSDT"])
@@ -56,10 +59,13 @@ class SymbolUniverseTests(unittest.TestCase):
         self.assertEqual(get_effective_symbol_universe(), [])
         self.assertEqual(get_effective_coin_universe(), [])
 
-        # All-invalid symbols => also empty Universe (not default)
+        # All-invalid symbols 以前会被视作「unknown 且被过滤」得到空 Universe，
+        # 现在允许任何 symbol，因此 Universe 会直接反映用户输入
         set_symbol_universe(["INVALIDUSDT", "ALSOINVALID"])
-        self.assertEqual(get_effective_symbol_universe(), [])
-        self.assertEqual(get_effective_coin_universe(), [])
+        self.assertEqual(get_effective_symbol_universe(), ["INVALIDUSDT", "ALSOINVALID"])
+        # INVALIDUSDT 会被推导为 coin "INVALID"，ALSOINVALID 没有后缀推导则被忽略
+        coins = get_effective_coin_universe()
+        self.assertIn("INVALID", coins)
 
         # Use clear_symbol_universe_override() to explicitly restore default
         clear_symbol_universe_override()
@@ -140,3 +146,120 @@ class UniverseIntegrationContractTests(unittest.TestCase):
             any("DOGE" in msg and "outside current Universe" in msg for msg in warning_messages),
             f"Expected orphaned position warning for DOGE, got: {warning_messages}",
         )
+
+
+class ValidateSymbolBackendAwareTests(unittest.TestCase):
+    """Tests for backend-aware symbol validation (Story 9.3).
+    
+    These tests verify that validate_symbol_for_universe correctly
+    dispatches to backend-specific validation logic based on
+    MARKET_DATA_BACKEND configuration.
+    
+    Note: Backend-specific validation tests have been moved to
+    tests/test_symbol_validation.py as part of the architecture refactor.
+    """
+
+    def test_static_validation_rejects_unknown_symbol(self) -> None:
+        """Unknown symbols should be rejected by backend-aware validation."""
+        is_valid, error = validate_symbol_for_universe("UNKNOWNUSDT")
+        self.assertFalse(is_valid)
+        # 现在不再依赖 SYMBOL_TO_COIN 白名单，而是直接委托 backend，错误信息中应包含 backend 标记
+        self.assertIn("backend:", error)
+
+    def test_static_validation_rejects_empty_symbol(self) -> None:
+        """Static validation should reject empty symbols."""
+        is_valid, error = validate_symbol_for_universe("")
+        self.assertFalse(is_valid)
+        self.assertIn("为空或无效", error)
+
+    @patch("config.universe.get_effective_market_data_backend")
+    @patch("exchange.symbol_validation.validate_symbol_for_backend")
+    def test_binance_backend_dispatches_to_exchange_layer(
+        self, mock_validate_backend, mock_get_backend
+    ) -> None:
+        """When backend is binance, should dispatch to exchange layer."""
+        mock_get_backend.return_value = "binance"
+        mock_validate_backend.return_value = (True, "")
+        
+        is_valid, error = validate_symbol_for_universe("BTCUSDT")
+        
+        self.assertTrue(is_valid)
+        self.assertEqual(error, "")
+        mock_validate_backend.assert_called_once_with("BTCUSDT", "binance")
+
+    @patch("config.universe.get_effective_market_data_backend")
+    @patch("exchange.symbol_validation.validate_symbol_for_backend")
+    def test_backpack_backend_dispatches_to_exchange_layer(
+        self, mock_validate_backend, mock_get_backend
+    ) -> None:
+        """When backend is backpack, should dispatch to exchange layer."""
+        mock_get_backend.return_value = "backpack"
+        mock_validate_backend.return_value = (True, "")
+        
+        is_valid, error = validate_symbol_for_universe("BTCUSDT")
+        
+        self.assertTrue(is_valid)
+        self.assertEqual(error, "")
+        mock_validate_backend.assert_called_once_with("BTCUSDT", "backpack")
+
+    @patch("config.universe.get_effective_market_data_backend")
+    @patch("exchange.symbol_validation.validate_symbol_for_backend")
+    def test_unknown_backend_returns_error_with_todo(
+        self, mock_validate_backend, mock_get_backend
+    ) -> None:
+        """Unknown backend should return error with TODO hint from exchange layer."""
+        mock_get_backend.return_value = "unknown_backend"
+        mock_validate_backend.return_value = (
+            False, 
+            "Symbol 'BTCUSDT' 无法校验: 未知的 backend 'unknown_backend' (TODO: 需要为此 backend 添加校验支持)"
+        )
+        
+        is_valid, error = validate_symbol_for_universe("BTCUSDT")
+        
+        self.assertFalse(is_valid)
+        self.assertIn("unknown_backend", error)
+        self.assertIn("TODO", error)
+
+
+class ValidateSymbolIntegrationTests(unittest.TestCase):
+    """Integration tests for validate_symbol_for_universe with runtime overrides.
+    
+    These tests verify the full integration path including runtime override
+    support for MARKET_DATA_BACKEND.
+    """
+
+    def test_validate_with_binance_runtime_override(self) -> None:
+        """Validation should respect MARKET_DATA_BACKEND runtime override."""
+        from config.runtime_overrides import set_runtime_override, clear_runtime_override
+        
+        try:
+            set_runtime_override("MARKET_DATA_BACKEND", "binance")
+            
+            # Mock the exchange layer validation to avoid network calls
+            with patch("exchange.symbol_validation.validate_symbol_for_backend") as mock_validate:
+                mock_validate.return_value = (True, "")
+                
+                is_valid, error = validate_symbol_for_universe("BTCUSDT")
+                
+                self.assertTrue(is_valid)
+                mock_validate.assert_called_once_with("BTCUSDT", "binance")
+        finally:
+            clear_runtime_override("MARKET_DATA_BACKEND")
+
+    def test_validate_with_backpack_runtime_override(self) -> None:
+        """Validation should respect MARKET_DATA_BACKEND runtime override."""
+        from config.runtime_overrides import set_runtime_override, clear_runtime_override
+        
+        try:
+            set_runtime_override("MARKET_DATA_BACKEND", "backpack")
+            
+            # Mock the exchange layer validation to avoid network calls
+            with patch("exchange.symbol_validation.validate_symbol_for_backend") as mock_validate:
+                mock_validate.return_value = (True, "")
+                
+                is_valid, error = validate_symbol_for_universe("BTCUSDT")
+                
+                self.assertTrue(is_valid)
+                mock_validate.assert_called_once_with("BTCUSDT", "backpack")
+        finally:
+            clear_runtime_override("MARKET_DATA_BACKEND")

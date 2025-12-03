@@ -100,6 +100,7 @@ class BackpackMarketDataClient:
         return raw
 
     def _get_mark_price_entry(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Internal method to get mark price entry. Use symbol_exists() for validation."""
         normalized = self._normalize_symbol(symbol)
         url = f"{self._base_url}/api/v1/markPrices"
         params: Dict[str, Any] = {}
@@ -118,6 +119,60 @@ class BackpackMarketDataClient:
                 if isinstance(item, dict) and (not normalized or item.get("symbol") == normalized):
                     return item
         return None
+
+    def symbol_exists(self, symbol: str) -> tuple:
+        """
+        Check if a symbol exists on Backpack exchange.
+        
+        This is the public API for symbol validation. It handles symbol
+        normalization and provides clear error semantics.
+        
+        Args:
+            symbol: Symbol to check (e.g., "BTCUSDT" or "BTC_USDC_PERP").
+            
+        Returns:
+            Tuple of (exists: bool, normalized_symbol: str, error_info: Optional[str]).
+            - exists: True if symbol exists, False otherwise.
+            - normalized_symbol: The Backpack-normalized symbol name.
+            - error_info: Error description if a network/API error occurred,
+                         None if the check completed successfully (even if symbol not found).
+        """
+        normalized = self._normalize_symbol(symbol)
+        url = f"{self._base_url}/api/v1/markPrices"
+        params: Dict[str, Any] = {}
+        if normalized:
+            params["symbol"] = normalized
+        
+        try:
+            response = self._session.get(url, params=params, timeout=self._timeout)
+        except requests.exceptions.Timeout as exc:
+            return (False, normalized, f"Network timeout: {exc}")
+        except requests.exceptions.ConnectionError as exc:
+            return (False, normalized, f"Connection error: {exc}")
+        except Exception as exc:
+            return (False, normalized, f"Request error: {exc}")
+        
+        # Check HTTP status
+        if response.status_code != 200:
+            return (False, normalized, f"HTTP {response.status_code}: {response.text[:200]}")
+        
+        try:
+            data = response.json()
+        except Exception as exc:
+            return (False, normalized, f"JSON parse error: {exc}")
+        
+        # Check if symbol exists in response
+        if isinstance(data, dict):
+            # Single symbol response - symbol exists
+            if data.get("symbol") == normalized or not normalized:
+                return (True, normalized, None)
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict) and (not normalized or item.get("symbol") == normalized):
+                    return (True, normalized, None)
+        
+        # Symbol not found (but request succeeded)
+        return (False, normalized, None)
 
     def get_klines(self, symbol: str, interval: str, limit: int) -> List[List[Any]]:
         normalized = self._normalize_symbol(symbol)

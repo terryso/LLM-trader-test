@@ -35,13 +35,54 @@ from __future__ import annotations
 import logging
 from typing import List, Optional, Tuple
 
-from .settings import SYMBOLS, SYMBOL_TO_COIN, get_effective_market_data_backend
+from .settings import SYMBOLS, SYMBOL_TO_COIN, COIN_TO_SYMBOL, get_effective_market_data_backend
 
 SymbolUniverse = List[str]
 
 # Module-level override; None means use default SYMBOLS from settings.
 # NOTE: This is in-memory only and will be lost on process restart.
 _UNIVERSE_OVERRIDE: Optional[SymbolUniverse] = None
+
+
+def resolve_coin_for_symbol(symbol: str) -> Optional[str]:
+    """Resolve a human-readable coin name from a canonical symbol.
+
+    Preference order:
+    1) Explicit SYMBOL_TO_COIN mapping when present.
+    2) Heuristics based on common suffixes (USDT/USDC/USD) or Backpack-style symbols.
+    """
+    sym = str(symbol).strip().upper()
+    if not sym:
+        return None
+    coin = SYMBOL_TO_COIN.get(sym)
+    if coin:
+        return coin
+    if sym.endswith("USDT") and len(sym) > 4:
+        return sym[:-4]
+    if sym.endswith("USDC") and len(sym) > 4:
+        return sym[:-4]
+    if sym.endswith("USD") and len(sym) > 3:
+        return sym[:-3]
+    if "_" in sym:
+        # Handle formats like BTC_USDC_PERP by taking the base asset
+        return sym.split("_")[0]
+    return None
+
+
+def resolve_symbol_for_coin(coin: str) -> Optional[str]:
+    """Resolve a canonical symbol from a coin name.
+
+    Preference order:
+    1) Explicit COIN_TO_SYMBOL mapping from settings.py.
+    2) Fallback to Binance-style futures symbol, e.g. BTC -> BTCUSDT.
+    """
+    base = str(coin).strip().upper()
+    if not base:
+        return None
+    symbol = COIN_TO_SYMBOL.get(base)
+    if symbol:
+        return symbol
+    return f"{base}USDT"
 
 
 def _normalize_symbols(symbols: List[str]) -> SymbolUniverse:
@@ -52,9 +93,6 @@ def _normalize_symbols(symbols: List[str]) -> SymbolUniverse:
             continue
         sym = str(raw).strip().upper()
         if not sym:
-            continue
-        if sym not in SYMBOL_TO_COIN:
-            logging.warning("Ignoring unknown symbol in universe override: %s", sym)
             continue
         if sym in seen:
             continue
@@ -99,7 +137,7 @@ def get_effective_coin_universe() -> List[str]:
     coins: List[str] = []
     seen = set()
     for symbol in symbols:
-        coin = SYMBOL_TO_COIN.get(symbol)
+        coin = resolve_coin_for_symbol(symbol)
         if not coin or coin in seen:
             continue
         seen.add(coin)
@@ -111,30 +149,37 @@ def validate_symbol_for_universe(symbol: str) -> Tuple[bool, str]:
     """Validate if a symbol is valid for the current MARKET_DATA_BACKEND.
 
     This function centralizes symbol validation logic used by higher-level
-    components such as Telegram /symbols commands (Story 9.2) and will be
-    extended by Story 9.3 to perform backend\-aware checks.
-
-    Current behavior (minimal, Story 9.2):
-    \- Treats SYMBOL_TO_COIN as the source of truth for known symbols.
-    \- Returns False for any symbol not present in SYMBOL_TO_COIN, with an
-      error message that includes the active MARKET_DATA_BACKEND.
+    components such as Telegram /symbols commands (Story 9.2).
+    
+    Story 9.3 Implementation:
+    - First performs static validation against SYMBOL_TO_COIN whitelist.
+    - Then delegates to exchange.symbol_validation service for backend-specific
+      validation against the actual market data source (Binance or Backpack).
+    
+    Architecture Note:
+    - Static validation (SYMBOL_TO_COIN check) remains in config layer.
+    - Backend-specific validation is delegated to exchange layer to maintain
+      proper separation of concerns.
 
     Args:
-        symbol: Normalized symbol to validate (e.g., "BTCUSDT").
+        symbol: Symbol to validate (e.g., "BTCUSDT").
 
     Returns:
         Tuple of (is_valid, error_message).
-        is_valid is True if the symbol is valid.
-        error_message contains the reason if invalid.
+        is_valid is True if the symbol is valid for the current backend.
+        error_message contains the reason if invalid, including backend info.
     """
+    # Import here to avoid circular dependency
+    from exchange.symbol_validation import validate_symbol_for_backend
+    
     normalized = str(symbol).strip().upper()
+    backend = get_effective_market_data_backend()
+
+    # Basic non-empty validation; actual existence is delegated to backend
     if not normalized:
-        backend = get_effective_market_data_backend()
         return False, f"Symbol '{symbol}' 为空或无效 (backend: {backend})"
 
-    if normalized not in SYMBOL_TO_COIN:
-        backend = get_effective_market_data_backend()
-        return False, f"Symbol '{normalized}' 不在已知交易对列表中 (backend: {backend})"
-
-    return True, ""
+    # Delegate to exchange layer for backend-specific validation
+    # This maintains proper architecture: config layer doesn't construct HTTP clients
+    return validate_symbol_for_backend(normalized, backend)
 

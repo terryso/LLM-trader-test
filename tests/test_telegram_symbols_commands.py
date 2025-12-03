@@ -142,7 +142,8 @@ class TestSymbolsAddCommand:
         cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="admin123")
 
         with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
-            result = handle_symbols_add_command(cmd, "BTCUSDT")
+            with patch("exchange.symbol_validation.validate_symbol_for_backend", return_value=(True, "")):
+                result = handle_symbols_add_command(cmd, "BTCUSDT")
 
         assert result.success is True
         assert result.action == "SYMBOLS_ADD"
@@ -160,7 +161,8 @@ class TestSymbolsAddCommand:
         cmd = _make_symbols_command(["add", "  btcusdt  "], user_id="admin123")
 
         with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
-            result = handle_symbols_add_command(cmd, "  btcusdt  ")
+            with patch("exchange.symbol_validation.validate_symbol_for_backend", return_value=(True, "")):
+                result = handle_symbols_add_command(cmd, "  btcusdt  ")
 
         assert result.success is True
         universe = get_effective_symbol_universe()
@@ -173,7 +175,8 @@ class TestSymbolsAddCommand:
         cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="admin123")
 
         with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
-            result = handle_symbols_add_command(cmd, "BTCUSDT")
+            with patch("exchange.symbol_validation.validate_symbol_for_backend", return_value=(True, "")):
+                result = handle_symbols_add_command(cmd, "BTCUSDT")
 
         assert result.success is True
         assert result.action == "SYMBOLS_ADD_ALREADY_EXISTS"
@@ -187,7 +190,8 @@ class TestSymbolsAddCommand:
         cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="admin123")
 
         with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
-            result = handle_symbols_add_command(cmd, "BTCUSDT")
+            with patch("exchange.symbol_validation.validate_symbol_for_backend", return_value=(True, "")):
+                result = handle_symbols_add_command(cmd, "BTCUSDT")
 
         assert result.success is True
         assert "1" in result.message  # old count
@@ -200,7 +204,8 @@ class TestSymbolsAddCommand:
         cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="admin123")
 
         with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
-            result = handle_symbols_command(cmd)
+            with patch("exchange.symbol_validation.validate_symbol_for_backend", return_value=(True, "")):
+                result = handle_symbols_command(cmd)
 
         assert result.success is True
         assert result.action == "SYMBOLS_ADD"
@@ -267,6 +272,17 @@ class TestSymbolsAddValidation:
 
         with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
             result = handle_symbols_command(cmd)
+
+        assert result.success is False
+        assert result.action == "SYMBOLS_ADD_MISSING_SYMBOL"
+        assert "缺少参数" in result.message
+
+    def test_symbols_add_whitespace_only_symbol(self):
+        """AC3: /symbols add with whitespace-only symbol should return error."""
+        cmd = _make_symbols_command(["add", "   "], user_id="admin123")
+
+        with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
+            result = handle_symbols_add_command(cmd, "   ")
 
         assert result.success is False
         assert result.action == "SYMBOLS_ADD_MISSING_SYMBOL"
@@ -369,6 +385,24 @@ class TestSymbolsRemoveCommand:
         assert result.success is True
         assert result.action == "SYMBOLS_REMOVE"
 
+    def test_symbols_remove_whitespace_only_symbol(self):
+        """AC4: /symbols remove with whitespace-only symbol should return error."""
+        set_symbol_universe(["ETHUSDT", "BTCUSDT"])
+
+        cmd = _make_symbols_command(["remove", "   "], user_id="admin123")
+
+        with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
+            result = handle_symbols_remove_command(cmd, "   ")
+
+        assert result.success is False
+        assert result.action == "SYMBOLS_REMOVE_MISSING_SYMBOL"
+        assert "缺少参数" in result.message
+
+        # Verify universe unchanged
+        universe = get_effective_symbol_universe()
+        assert "ETHUSDT" in universe
+        assert "BTCUSDT" in universe
+
 
 # ═══════════════════════════════════════════════════════════════════
 # Main Handler Tests
@@ -456,17 +490,101 @@ class TestValidateSymbolForUniverse:
     """Tests for validate_symbol_for_universe function."""
 
     def test_validate_known_symbol_returns_true(self):
-        """Test validation returns True for known symbols."""
-        for symbol in SYMBOL_TO_COIN.keys():
-            is_valid, error = validate_symbol_for_universe(symbol)
-            assert is_valid is True
-            assert error == ""
+        """Test validation returns True for known symbols (with mocked backend)."""
+        # Mock backend validation to avoid network calls
+        with patch("exchange.symbol_validation.validate_symbol_for_backend", return_value=(True, "")):
+            with patch("config.universe.get_effective_market_data_backend", return_value="binance"):
+                for symbol in SYMBOL_TO_COIN.keys():
+                    is_valid, error = validate_symbol_for_universe(symbol)
+                    assert is_valid is True
+                    assert error == ""
 
     def test_validate_unknown_symbol_returns_false(self):
         """Test validation returns False for unknown symbols."""
         is_valid, error = validate_symbol_for_universe("UNKNOWNUSDT")
         assert is_valid is False
-        assert "不在已知交易对列表中" in error
+        # 新行为：错误信息来源于 backend 校验，应当包含 backend 类型提示
+        assert "backend:" in error
+
+
+class TestSymbolsAddBackendAwareValidation:
+    """Tests for /symbols add with backend-aware validation (Story 9.3 AC4)."""
+
+    def test_symbols_add_binance_backend_validation_success(self):
+        """AC4: /symbols add should pass when Binance backend validates symbol."""
+        set_symbol_universe(["ETHUSDT"])
+
+        cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="admin123")
+
+        with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
+            with patch("exchange.symbol_validation.validate_symbol_for_backend", return_value=(True, "")):
+                with patch("config.universe.get_effective_market_data_backend", return_value="binance"):
+                    result = handle_symbols_add_command(cmd, "BTCUSDT")
+
+        assert result.success is True
+        assert result.action == "SYMBOLS_ADD"
+        assert "BTCUSDT" in get_effective_symbol_universe()
+
+    def test_symbols_add_binance_backend_validation_failure(self):
+        """AC4: /symbols add should fail when Binance backend rejects symbol."""
+        set_symbol_universe(["ETHUSDT"])
+
+        cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="admin123")
+
+        with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
+            with patch("exchange.symbol_validation.validate_symbol_for_backend", 
+                       return_value=(False, "Symbol 'BTCUSDT' 不被当前 backend 支持 (backend: binance)")):
+                with patch("config.universe.get_effective_market_data_backend", return_value="binance"):
+                    result = handle_symbols_add_command(cmd, "BTCUSDT")
+
+        assert result.success is False
+        assert result.action == "SYMBOLS_ADD_INVALID_SYMBOL"
+        assert "backend: binance" in result.message
+        assert "BTCUSDT" not in get_effective_symbol_universe()
+
+    def test_symbols_add_backpack_backend_validation_success(self):
+        """AC4: /symbols add should pass when Backpack backend validates symbol."""
+        set_symbol_universe(["ETHUSDT"])
+
+        cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="admin123")
+
+        with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
+            with patch("exchange.symbol_validation.validate_symbol_for_backend", return_value=(True, "")):
+                with patch("config.universe.get_effective_market_data_backend", return_value="backpack"):
+                    result = handle_symbols_add_command(cmd, "BTCUSDT")
+
+        assert result.success is True
+        assert result.action == "SYMBOLS_ADD"
+
+    def test_symbols_add_backpack_backend_validation_failure(self):
+        """AC4: /symbols add should fail when Backpack backend rejects symbol."""
+        set_symbol_universe(["ETHUSDT"])
+
+        cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="admin123")
+
+        with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
+            with patch("exchange.symbol_validation.validate_symbol_for_backend", 
+                       return_value=(False, "Symbol 'BTCUSDT' 在 Backpack 对应 USDC 合约列表中未找到 (backend: backpack)")):
+                with patch("config.universe.get_effective_market_data_backend", return_value="backpack"):
+                    result = handle_symbols_add_command(cmd, "BTCUSDT")
+
+        assert result.success is False
+        assert result.action == "SYMBOLS_ADD_INVALID_SYMBOL"
+        assert "backend: backpack" in result.message
+
+    def test_symbols_add_error_message_contains_backend_info(self):
+        """AC4: Error message should contain backend type and failure reason."""
+        cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="admin123")
+
+        with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
+            with patch("exchange.symbol_validation.validate_symbol_for_backend", 
+                       return_value=(False, "Symbol 'BTCUSDT' 校验失败 (backend: binance, error: API error)")):
+                with patch("config.universe.get_effective_market_data_backend", return_value="binance"):
+                    result = handle_symbols_add_command(cmd, "BTCUSDT")
+
+        assert result.success is False
+        # Error message should contain backend info
+        assert "binance" in result.message.lower() or "backend" in result.message.lower()
 
 
 class TestCheckSymbolsAdminPermission:
@@ -494,7 +612,7 @@ class TestCheckSymbolsAdminPermission:
 
 
 # ═══════════════════════════════════════════════════════════════════
-# Audit Logging Tests
+# Audit Logging Tests (Story 9.2 original tests, updated for Story 9.4)
 # ═══════════════════════════════════════════════════════════════════
 
 
@@ -502,19 +620,21 @@ class TestSymbolsAuditLogging:
     """Tests for /symbols audit logging."""
 
     def test_audit_log_written_on_successful_add(self, caplog):
-        """Successful /symbols add should write audit log."""
+        """Successful /symbols add should write audit log at INFO level (Story 9.4 AC4)."""
         set_symbol_universe(["ETHUSDT"])
 
         cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="admin123")
 
-        with caplog.at_level(logging.WARNING):
+        # Story 9.4 AC4: Successful operations use INFO level
+        with caplog.at_level(logging.INFO):
             with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
-                result = handle_symbols_add_command(cmd, "BTCUSDT")
+                with patch("exchange.symbol_validation.validate_symbol_for_backend", return_value=(True, "")):
+                    result = handle_symbols_add_command(cmd, "BTCUSDT")
 
         assert result.success is True
 
-        # Check that audit log was written
-        audit_logs = [r for r in caplog.records if "SYMBOLS_AUDIT" in r.message]
+        # Check that audit log was written at INFO level
+        audit_logs = [r for r in caplog.records if "SYMBOLS_AUDIT" in r.message and r.levelno == logging.INFO]
         assert len(audit_logs) >= 1
 
         audit_message = audit_logs[0].message
@@ -523,27 +643,28 @@ class TestSymbolsAuditLogging:
         assert "user_id=admin123" in audit_message
 
     def test_audit_log_written_on_successful_remove(self, caplog):
-        """Successful /symbols remove should write audit log."""
+        """Successful /symbols remove should write audit log at INFO level (Story 9.4 AC4)."""
         set_symbol_universe(["ETHUSDT", "BTCUSDT"])
 
         cmd = _make_symbols_command(["remove", "BTCUSDT"], user_id="admin123")
 
-        with caplog.at_level(logging.WARNING):
+        # Story 9.4 AC4: Successful operations use INFO level
+        with caplog.at_level(logging.INFO):
             with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
                 result = handle_symbols_remove_command(cmd, "BTCUSDT")
 
         assert result.success is True
 
-        # Check that audit log was written
-        audit_logs = [r for r in caplog.records if "SYMBOLS_AUDIT" in r.message]
+        # Check that audit log was written at INFO level
+        audit_logs = [r for r in caplog.records if "SYMBOLS_AUDIT" in r.message and r.levelno == logging.INFO]
         assert len(audit_logs) >= 1
 
         audit_message = audit_logs[0].message
         assert "action=REMOVE" in audit_message
         assert "symbol=BTCUSDT" in audit_message
 
-    def test_no_audit_log_on_permission_denied(self, caplog):
-        """No audit log should be written when permission is denied."""
+    def test_deny_audit_log_on_permission_denied(self, caplog):
+        """Story 9.4 AC3: Permission denied should write DENY audit log at WARNING level."""
         cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="user456")
 
         with caplog.at_level(logging.WARNING):
@@ -552,9 +673,15 @@ class TestSymbolsAuditLogging:
 
         assert result.success is False
 
-        # Should NOT have SYMBOLS_AUDIT log
+        # Story 9.4 AC3: Denied modifications should have SYMBOLS_AUDIT log with action=DENY
         audit_logs = [r for r in caplog.records if "SYMBOLS_AUDIT" in r.message]
-        assert len(audit_logs) == 0
+        assert len(audit_logs) >= 1
+        
+        audit_message = audit_logs[0].message
+        assert "action=DENY" in audit_message
+        assert "success=False" in audit_message
+        assert "reason_code=" in audit_message
+        assert "old_universe=" in audit_message  # DENY logs include universe context
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -568,41 +695,42 @@ class TestSymbolsUniverseIntegration:
     def test_full_workflow_add_list_remove(self):
         """Test a complete workflow: list -> add -> list -> remove -> list."""
         with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
-            # Start with default Universe
-            clear_symbol_universe_override()
+            with patch("exchange.symbol_validation.validate_symbol_for_backend", return_value=(True, "")):
+                # Start with default Universe
+                clear_symbol_universe_override()
 
-            # 1. List default Universe
-            list_cmd = _make_symbols_command(["list"])
-            list_result = handle_symbols_command(list_cmd)
-            assert list_result.success is True
-            initial_count = len(get_effective_symbol_universe())
+                # 1. List default Universe
+                list_cmd = _make_symbols_command(["list"])
+                list_result = handle_symbols_command(list_cmd)
+                assert list_result.success is True
+                initial_count = len(get_effective_symbol_universe())
 
-            # 2. Set to a smaller Universe for testing
-            set_symbol_universe(["ETHUSDT"])
+                # 2. Set to a smaller Universe for testing
+                set_symbol_universe(["ETHUSDT"])
 
-            # 3. Add a symbol
-            add_cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="admin123")
-            add_result = handle_symbols_command(add_cmd)
-            assert add_result.success is True
-            assert add_result.state_changed is True
+                # 3. Add a symbol
+                add_cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="admin123")
+                add_result = handle_symbols_command(add_cmd)
+                assert add_result.success is True
+                assert add_result.state_changed is True
 
-            # 4. Verify via list
-            list_cmd2 = _make_symbols_command(["list"])
-            list_result2 = handle_symbols_command(list_cmd2)
-            assert "BTCUSDT" in list_result2.message
-            assert "ETHUSDT" in list_result2.message
+                # 4. Verify via list
+                list_cmd2 = _make_symbols_command(["list"])
+                list_result2 = handle_symbols_command(list_cmd2)
+                assert "BTCUSDT" in list_result2.message
+                assert "ETHUSDT" in list_result2.message
 
-            # 5. Remove a symbol
-            remove_cmd = _make_symbols_command(["remove", "ETHUSDT"], user_id="admin123")
-            remove_result = handle_symbols_command(remove_cmd)
-            assert remove_result.success is True
-            assert remove_result.state_changed is True
+                # 5. Remove a symbol
+                remove_cmd = _make_symbols_command(["remove", "ETHUSDT"], user_id="admin123")
+                remove_result = handle_symbols_command(remove_cmd)
+                assert remove_result.success is True
+                assert remove_result.state_changed is True
 
-            # 6. Verify via list
-            list_cmd3 = _make_symbols_command(["list"])
-            list_result3 = handle_symbols_command(list_cmd3)
-            assert "BTCUSDT" in list_result3.message
-            assert "ETHUSDT" not in list_result3.message
+                # 6. Verify via list
+                list_cmd3 = _make_symbols_command(["list"])
+                list_result3 = handle_symbols_command(list_cmd3)
+                assert "BTCUSDT" in list_result3.message
+                assert "ETHUSDT" not in list_result3.message
 
     def test_symbols_list_allowed_for_any_user(self):
         """AC1: /symbols list should work for any user (read-only)."""
@@ -615,23 +743,244 @@ class TestSymbolsUniverseIntegration:
     def test_universe_changes_persist_across_commands(self):
         """Universe changes should persist across multiple commands."""
         with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
-            set_symbol_universe(["ETHUSDT"])
+            with patch("exchange.symbol_validation.validate_symbol_for_backend", return_value=(True, "")):
+                set_symbol_universe(["ETHUSDT"])
 
-            # Add BTCUSDT
-            add_cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="admin123")
-            handle_symbols_command(add_cmd)
+                # Add BTCUSDT
+                add_cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="admin123")
+                handle_symbols_command(add_cmd)
 
-            # Verify directly via Universe API
-            universe = get_effective_symbol_universe()
-            assert "BTCUSDT" in universe
-            assert "ETHUSDT" in universe
-            assert len(universe) == 2
+                # Verify directly via Universe API
+                universe = get_effective_symbol_universe()
+                assert "BTCUSDT" in universe
+                assert "ETHUSDT" in universe
+                assert len(universe) == 2
 
-            # Add SOLUSDT
-            add_cmd2 = _make_symbols_command(["add", "SOLUSDT"], user_id="admin123")
-            handle_symbols_command(add_cmd2)
+                # Add SOLUSDT
+                add_cmd2 = _make_symbols_command(["add", "SOLUSDT"], user_id="admin123")
+                handle_symbols_command(add_cmd2)
 
-            # Verify
-            universe2 = get_effective_symbol_universe()
-            assert len(universe2) == 3
-            assert "SOLUSDT" in universe2
+                # Verify
+                universe2 = get_effective_symbol_universe()
+                assert len(universe2) == 3
+                assert "SOLUSDT" in universe2
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Story 9.4 AC3: Unified Audit Logging Tests
+# ═══════════════════════════════════════════════════════════════════
+
+
+class TestSymbolsAuditLoggingEnhanced:
+    """Tests for Story 9.4 AC3: Unified audit logging for /symbols commands."""
+
+    def test_audit_log_for_successful_add_uses_info_level(self, caplog):
+        """Story 9.4 AC4: Successful add should use INFO level."""
+        set_symbol_universe(["ETHUSDT"])
+
+        cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="admin123")
+
+        with caplog.at_level(logging.INFO):
+            with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
+                with patch("exchange.symbol_validation.validate_symbol_for_backend", return_value=(True, "")):
+                    result = handle_symbols_add_command(cmd, "BTCUSDT")
+
+        assert result.success is True
+
+        # Check that audit log was written at INFO level
+        audit_logs = [r for r in caplog.records if "SYMBOLS_AUDIT" in r.message and r.levelno == logging.INFO]
+        assert len(audit_logs) >= 1
+
+        audit_message = audit_logs[0].message
+        assert "action=ADD" in audit_message
+        assert "success=True" in audit_message
+        # old_universe/new_universe should reflect the actual universe sizes
+        # initial universe: ["ETHUSDT"] -> old_universe=1 symbols
+        # after add BTCUSDT: ["ETHUSDT", "BTCUSDT"] -> new_universe=2 symbols
+        assert "old_universe=1 symbols" in audit_message
+        assert "new_universe=2 symbols" in audit_message
+
+    def test_audit_log_for_successful_remove_uses_info_level(self, caplog):
+        """Story 9.4 AC4: Successful remove should use INFO level."""
+        set_symbol_universe(["ETHUSDT", "BTCUSDT"])
+
+        cmd = _make_symbols_command(["remove", "BTCUSDT"], user_id="admin123")
+
+        with caplog.at_level(logging.INFO):
+            with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
+                result = handle_symbols_remove_command(cmd, "BTCUSDT")
+
+        assert result.success is True
+
+        # Check that audit log was written at INFO level
+        audit_logs = [r for r in caplog.records if "SYMBOLS_AUDIT" in r.message and r.levelno == logging.INFO]
+        assert len(audit_logs) >= 1
+
+        audit_message = audit_logs[0].message
+        assert "action=REMOVE" in audit_message
+        assert "success=True" in audit_message
+
+    def test_audit_log_for_permission_denied_add_uses_warning_level(self, caplog):
+        """Story 9.4 AC3: Permission denied should write DENY audit log at WARNING level."""
+        cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="user456")
+
+        with caplog.at_level(logging.WARNING):
+            with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
+                result = handle_symbols_add_command(cmd, "BTCUSDT")
+
+        assert result.success is False
+        assert result.action == "SYMBOLS_ADD_PERMISSION_DENIED"
+
+        # Check that DENY audit log was written at WARNING level
+        audit_logs = [r for r in caplog.records if "SYMBOLS_AUDIT" in r.message and "action=DENY" in r.message]
+        assert len(audit_logs) >= 1
+
+        audit_message = audit_logs[0].message
+        assert "success=False" in audit_message
+        assert "reason_code=add_permission_denied" in audit_message
+        assert "old_universe=" in audit_message  # DENY logs include universe context
+
+    def test_audit_log_for_permission_denied_remove_uses_warning_level(self, caplog):
+        """Story 9.4 AC3: Permission denied for remove should write DENY audit log."""
+        set_symbol_universe(["ETHUSDT", "BTCUSDT"])
+
+        cmd = _make_symbols_command(["remove", "BTCUSDT"], user_id="user456")
+
+        with caplog.at_level(logging.WARNING):
+            with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
+                result = handle_symbols_remove_command(cmd, "BTCUSDT")
+
+        assert result.success is False
+        assert result.action == "SYMBOLS_REMOVE_PERMISSION_DENIED"
+
+        # Check that DENY audit log was written
+        audit_logs = [r for r in caplog.records if "SYMBOLS_AUDIT" in r.message and "action=DENY" in r.message]
+        assert len(audit_logs) >= 1
+
+        audit_message = audit_logs[0].message
+        assert "success=False" in audit_message
+        assert "reason_code=remove_permission_denied" in audit_message
+        # Universe before the denied remove should have 2 symbols (ETHUSDT, BTCUSDT)
+        assert "old_universe=2 symbols" in audit_message
+
+    def test_audit_log_for_invalid_symbol_uses_warning_level(self, caplog):
+        """Story 9.4 AC3: Invalid symbol should write DENY audit log at WARNING level."""
+        cmd = _make_symbols_command(["add", "INVALIDUSDT"], user_id="admin123")
+
+        with caplog.at_level(logging.WARNING):
+            with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
+                result = handle_symbols_add_command(cmd, "INVALIDUSDT")
+
+        assert result.success is False
+        assert result.action == "SYMBOLS_ADD_INVALID_SYMBOL"
+
+        # Check that DENY audit log was written
+        audit_logs = [r for r in caplog.records if "SYMBOLS_AUDIT" in r.message and "action=DENY" in r.message]
+        assert len(audit_logs) >= 1
+
+        audit_message = audit_logs[0].message
+        assert "success=False" in audit_message
+        assert "reason_code=add_invalid_symbol" in audit_message
+        assert "old_universe=" in audit_message  # DENY logs include universe context
+
+    def test_audit_log_reason_is_sanitized_and_truncated(self, caplog):
+        """_sanitize_reason should remove newlines and truncate overly long reasons."""
+        # Prepare a universe so old_universe summary is well-defined
+        set_symbol_universe(["ETHUSDT"])
+
+        # Reason with newlines and excessive length
+        long_reason = "line1\nline2\r\n" + ("x" * 600)
+
+        with caplog.at_level(logging.WARNING):
+            _log_symbols_audit(
+                action="DENY",
+                symbol="BTCUSDT",
+                user_id="user1",
+                chat_id="chat1",
+                old_universe=get_effective_symbol_universe(),
+                success=False,
+                reason_code="test_reason",
+                reason_detail=long_reason,
+            )
+
+        audit_logs = [
+            r for r in caplog.records
+            if "SYMBOLS_AUDIT" in r.message and "reason_code=test_reason" in r.message
+        ]
+        assert len(audit_logs) >= 1
+
+        msg = audit_logs[0].message
+        # Newlines should be removed from the log message
+        assert "\n" not in msg
+        assert "\r" not in msg
+        # Collapsed whitespace should keep the two lines adjacent
+        assert "line1 line2" in msg
+        # Very long reasons should be truncated with an explicit marker
+        assert "... (truncated)" in msg
+        # The original 600-character run should not appear intact after truncation
+        assert "x" * 600 not in msg
+
+    def test_audit_log_contains_universe_summary(self, caplog):
+        """Story 9.4 AC3: Successful operations should log universe summary."""
+        set_symbol_universe(["ETHUSDT"])
+
+        cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="admin123")
+
+        with caplog.at_level(logging.INFO):
+            with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
+                with patch("exchange.symbol_validation.validate_symbol_for_backend", return_value=(True, "")):
+                    result = handle_symbols_add_command(cmd, "BTCUSDT")
+
+        assert result.success is True
+
+        # Check that audit log contains universe summary
+        audit_logs = [r for r in caplog.records if "SYMBOLS_AUDIT" in r.message and r.levelno == logging.INFO]
+        assert len(audit_logs) >= 1
+
+        audit_message = audit_logs[0].message
+        assert "old_universe=" in audit_message
+        assert "new_universe=" in audit_message
+        assert "symbols" in audit_message  # e.g., "1 symbols", "2 symbols"
+
+    def test_audit_log_contains_timestamp(self, caplog):
+        """Story 9.4 AC3: Audit logs should contain timestamp."""
+        set_symbol_universe(["ETHUSDT"])
+
+        cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="admin123")
+
+        with caplog.at_level(logging.INFO):
+            with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
+                with patch("exchange.symbol_validation.validate_symbol_for_backend", return_value=(True, "")):
+                    result = handle_symbols_add_command(cmd, "BTCUSDT")
+
+        assert result.success is True
+
+        # Check that audit log contains timestamp
+        audit_logs = [r for r in caplog.records if "SYMBOLS_AUDIT" in r.message]
+        assert len(audit_logs) >= 1
+
+        audit_message = audit_logs[0].message
+        assert "timestamp=" in audit_message
+
+    def test_non_admin_can_only_use_list(self):
+        """Story 9.4 AC6: Non-admin users can only use /symbols list."""
+        # List should work for any user
+        list_cmd = _make_symbols_command(["list"], user_id="any_user")
+        list_result = handle_symbols_list_command(list_cmd)
+        assert list_result.success is True
+        assert list_result.action == "SYMBOLS_LIST"
+
+        # Add should be denied
+        with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
+            add_cmd = _make_symbols_command(["add", "BTCUSDT"], user_id="non_admin")
+            add_result = handle_symbols_add_command(add_cmd, "BTCUSDT")
+            assert add_result.success is False
+            assert add_result.action == "SYMBOLS_ADD_PERMISSION_DENIED"
+
+        # Remove should be denied
+        set_symbol_universe(["ETHUSDT", "BTCUSDT"])
+        with patch("config.settings.get_telegram_admin_user_id", return_value="admin123"):
+            remove_cmd = _make_symbols_command(["remove", "BTCUSDT"], user_id="non_admin")
+            remove_result = handle_symbols_remove_command(remove_cmd, "BTCUSDT")
+            assert remove_result.success is False
+            assert remove_result.action == "SYMBOLS_REMOVE_PERMISSION_DENIED"
