@@ -188,7 +188,7 @@ class TestTelegramCommandDataclass:
 class TestRegisterTelegramCommands:
     """Tests for register_telegram_commands helper."""
 
-    @patch("notifications.telegram_commands.requests.post")
+    @patch("notifications.commands.base.requests.post")
     def test_register_telegram_commands_sends_expected_payload(
         self,
         mock_post: MagicMock,
@@ -211,7 +211,7 @@ class TestRegisterTelegramCommands:
         for expected in {"status", "risk", "kill", "resume", "reset_daily", "config", "help"}:
             assert expected in names
 
-    @patch("notifications.telegram_commands.requests.post")
+    @patch("notifications.commands.base.requests.post")
     def test_register_telegram_commands_skips_without_token(
         self,
         mock_post: MagicMock,
@@ -228,7 +228,7 @@ class TestRegisterTelegramCommands:
 class TestChatIdFiltering:
     """Tests for chat ID filtering (AC3)."""
     
-    @patch("notifications.telegram_commands.requests.get")
+    @patch("notifications.commands.base.requests.get")
     def test_only_allowed_chat_commands_returned(
         self, mock_get: MagicMock, handler: TelegramCommandHandler, allowed_chat_id: str
     ):
@@ -247,7 +247,7 @@ class TestChatIdFiltering:
         assert commands[0].command == "status"
         assert commands[1].command == "help"
     
-    @patch("notifications.telegram_commands.requests.get")
+    @patch("notifications.commands.base.requests.get")
     def test_unauthorized_chat_logged_as_warning(
         self, mock_get: MagicMock, handler: TelegramCommandHandler, caplog
     ):
@@ -263,7 +263,7 @@ class TestChatIdFiltering:
         assert "unauthorized chat" in caplog.text.lower()
         assert "999999999" in caplog.text
     
-    @patch("notifications.telegram_commands.requests.get")
+    @patch("notifications.commands.base.requests.get")
     def test_all_unauthorized_commands_filtered(
         self, mock_get: MagicMock, handler: TelegramCommandHandler
     ):
@@ -288,7 +288,7 @@ class TestChatIdFiltering:
 class TestOffsetMechanism:
     """Tests for last_update_id / offset mechanism (AC3)."""
     
-    @patch("notifications.telegram_commands.requests.get")
+    @patch("notifications.commands.base.requests.get")
     def test_last_update_id_updated_after_poll(
         self, mock_get: MagicMock, handler: TelegramCommandHandler, allowed_chat_id: str
     ):
@@ -304,7 +304,7 @@ class TestOffsetMechanism:
         handler.poll_commands()
         assert handler.last_update_id == 101
     
-    @patch("notifications.telegram_commands.requests.get")
+    @patch("notifications.commands.base.requests.get")
     def test_offset_used_in_subsequent_polls(
         self, mock_get: MagicMock, handler: TelegramCommandHandler, allowed_chat_id: str
     ):
@@ -328,7 +328,7 @@ class TestOffsetMechanism:
         # Second call: offset=101
         assert calls[1].kwargs["params"]["offset"] == 101
     
-    @patch("notifications.telegram_commands.requests.get")
+    @patch("notifications.commands.base.requests.get")
     def test_no_duplicate_commands_on_repeated_polls(
         self, mock_get: MagicMock, handler: TelegramCommandHandler, allowed_chat_id: str
     ):
@@ -346,7 +346,7 @@ class TestOffsetMechanism:
         commands2 = handler.poll_commands()
         assert len(commands2) == 0
     
-    @patch("notifications.telegram_commands.requests.get")
+    @patch("notifications.commands.base.requests.get")
     def test_last_update_id_updated_even_for_filtered_commands(
         self, mock_get: MagicMock, handler: TelegramCommandHandler
     ):
@@ -369,7 +369,7 @@ class TestOffsetMechanism:
 class TestErrorHandling:
     """Tests for error handling (AC3)."""
     
-    @patch("notifications.telegram_commands.requests.get")
+    @patch("notifications.commands.base.requests.get")
     def test_http_error_logged_and_returns_empty(
         self, mock_get: MagicMock, handler: TelegramCommandHandler, caplog
     ):
@@ -383,7 +383,7 @@ class TestErrorHandling:
         assert commands == []
         assert "500" in caplog.text
     
-    @patch("notifications.telegram_commands.requests.get")
+    @patch("notifications.commands.base.requests.get")
     def test_timeout_logged_and_returns_empty(
         self, mock_get: MagicMock, handler: TelegramCommandHandler, caplog
     ):
@@ -396,7 +396,7 @@ class TestErrorHandling:
         assert commands == []
         assert "timed out" in caplog.text.lower()
     
-    @patch("notifications.telegram_commands.requests.get")
+    @patch("notifications.commands.base.requests.get")
     def test_network_error_logged_and_returns_empty(
         self, mock_get: MagicMock, handler: TelegramCommandHandler, caplog
     ):
@@ -409,7 +409,7 @@ class TestErrorHandling:
         assert commands == []
         assert "failed" in caplog.text.lower()
     
-    @patch("notifications.telegram_commands.requests.get")
+    @patch("notifications.commands.base.requests.get")
     def test_invalid_json_logged_and_returns_empty(
         self, mock_get: MagicMock, handler: TelegramCommandHandler, caplog
     ):
@@ -423,7 +423,7 @@ class TestErrorHandling:
         assert commands == []
         assert "parse" in caplog.text.lower() or "json" in caplog.text.lower()
     
-    @patch("notifications.telegram_commands.requests.get")
+    @patch("notifications.commands.base.requests.get")
     def test_api_ok_false_logged_and_returns_empty(
         self, mock_get: MagicMock, handler: TelegramCommandHandler, caplog
     ):
@@ -458,7 +458,7 @@ class TestErrorHandling:
 class TestMessageTypeFiltering:
     """Tests for message type filtering."""
     
-    @patch("notifications.telegram_commands.requests.get")
+    @patch("notifications.commands.base.requests.get")
     def test_non_message_updates_ignored(
         self, mock_get: MagicMock, handler: TelegramCommandHandler
     ):
@@ -474,7 +474,7 @@ class TestMessageTypeFiltering:
         
         assert len(commands) == 0
     
-    @patch("notifications.telegram_commands.requests.get")
+    @patch("notifications.commands.base.requests.get")
     def test_non_command_messages_ignored(
         self, mock_get: MagicMock, handler: TelegramCommandHandler, allowed_chat_id: str
     ):
@@ -492,7 +492,7 @@ class TestMessageTypeFiltering:
         assert len(commands) == 1
         assert commands[0].command == "status"
     
-    @patch("notifications.telegram_commands.requests.get")
+    @patch("notifications.commands.base.requests.get")
     def test_empty_text_messages_ignored(
         self, mock_get: MagicMock, handler: TelegramCommandHandler, allowed_chat_id: str
     ):
@@ -668,7 +668,7 @@ class TestProcessTelegramCommands:
 class TestFullPollingFlow:
     """Integration-style tests for the full polling flow."""
     
-    @patch("notifications.telegram_commands.requests.get")
+    @patch("notifications.commands.base.requests.get")
     def test_full_polling_flow(
         self, mock_get: MagicMock, bot_token: str, allowed_chat_id: str
     ):
@@ -2618,7 +2618,7 @@ class TestHelpAndUnknownHandlerIntegration:
 class TestChatIdFilteringForHelp:
     """Tests for chat ID filtering with /help command (Story 7.4.5 AC2)."""
 
-    @patch("notifications.telegram_commands.requests.get")
+    @patch("notifications.commands.base.requests.get")
     def test_help_from_unauthorized_chat_filtered(
         self, mock_get: MagicMock, handler: TelegramCommandHandler, caplog
     ):
@@ -2634,7 +2634,7 @@ class TestChatIdFilteringForHelp:
         assert "unauthorized chat" in caplog.text.lower()
         assert "999999999" in caplog.text
 
-    @patch("notifications.telegram_commands.requests.get")
+    @patch("notifications.commands.base.requests.get")
     def test_help_from_authorized_chat_processed(
         self, mock_get: MagicMock, handler: TelegramCommandHandler, allowed_chat_id: str
     ):

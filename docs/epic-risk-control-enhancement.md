@@ -620,17 +620,17 @@ def handle_command(chat_id: str, command: str, args: List[str]) -> Optional[str]
 **So that** I can quickly reduce risk on a single symbol without logging into the exchange
 
 **Acceptance Criteria**:
-- [ ] 支持命令格式：`/close SYMBOL all` 与 `/close SYMBOL AMOUNT`：  
+- [ ] 支持命令格式：`/close SYMBOL`、`/close SYMBOL all` 与 `/close SYMBOL AMOUNT`：  
   - `SYMBOL` 使用与当前持仓结构一致的标识（如 `BTCUSDT`）；  
-  - `all` 表示对该品种当前持仓执行全平；  
-  - `AMOUNT` 表示名义金额（USDT），用于部分平仓。
-- [ ] 当 `AMOUNT` 小于当前名义仓位时：  
+  - 当未提供 `AMOUNT` 或显式使用 `all` 时，对该品种当前持仓执行全平；  
+  - `AMOUNT` 表示当前名义仓位的百分比（0–100），用于部分平仓。
+- [ ] 当 `0 < AMOUNT < 100` 时：  
   - 计算对应需要成交的数量（合约张数或币数量），按统一规则向下取整至交易所最小单位；  
   - 下发 reduce-only 市价单（或等价实现）执行部分平仓；  
   - 返回消息中包含：本次实际平仓名义金额、估算成交数量、平仓后剩余持仓的方向与名义金额。
-- [ ] 当 `AMOUNT` 大于等于当前名义仓位时：  
+- [ ] 当 `AMOUNT >= 100` 时：  
   - 退化执行为全平；  
-  - 返回消息需明确提示“请求金额 >= 当前仓位名义，已执行全平”。
+  - 返回消息需明确提示“请求百分比 >= 100%，已执行全平”。
 - [ ] 当该 `SYMBOL` 当前无持仓时：  
   - 不执行任何交易；  
   - 返回清晰提示（例如“当前无 BTCUSDT 持仓，未执行平仓操作”）。
