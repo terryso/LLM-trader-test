@@ -33,6 +33,7 @@ def create_kill_resume_handlers(
     daily_loss_limit_enabled: bool = True,
     daily_loss_limit_pct: float = 5.0,
     account_snapshot_fn: Optional[Callable[[], Optional[Dict[str, Any]]]] = None,
+    execute_close_fn: Optional[Callable[[str, str, float], Any]] = None,
 ) -> Dict[str, Callable[[TelegramCommand], None]]:
     """Create command handlers for Telegram commands.
     
@@ -64,6 +65,9 @@ def create_kill_resume_handlers(
             - total_equity: Total account equity
             - total_margin: Margin in use
             - positions_count: Number of open positions
+        execute_close_fn: Optional function to execute position close.
+            Signature: execute_close_fn(coin, side, quantity) -> CloseResult or None.
+            Used by /close command to execute partial or full position closes.
     
     Returns:
         Dict mapping command names to handler functions.
@@ -80,6 +84,7 @@ def create_kill_resume_handlers(
     from notifications.commands.config import handle_config_command
     from notifications.commands.symbols import handle_symbols_command
     from notifications.commands.audit import handle_audit_command
+    from notifications.commands.close import handle_close_command, get_positions_for_close
     
     def _send_response(text: str, target_chat_id: str) -> None:
         """Send response message to Telegram."""
@@ -392,6 +397,38 @@ def create_kill_resume_handlers(
             _record_event(result.action, detail)
 
     handlers["audit"] = audit_handler
+
+    def close_handler(cmd: TelegramCommand) -> None:
+        """Handler for /close command (partial or full position close)."""
+        try:
+            # Get current positions from live exchange or local portfolio
+            current_positions = get_positions_for_close(
+                account_snapshot_fn=account_snapshot_fn,
+                positions_snapshot_fn=positions_snapshot_fn,
+            )
+            result = handle_close_command(
+                cmd,
+                positions=current_positions,
+                execute_close_fn=execute_close_fn,
+            )
+        except Exception as exc:
+            logging.error("Error processing Telegram /close command: %s", exc)
+            fallback = "⚠️ *平仓命令处理出错，请稍后重试。*"
+            _send_response(fallback, cmd.chat_id)
+            return
+
+        _send_response(result.message, cmd.chat_id)
+
+        if result.action:
+            detail = f"close via Telegram | chat_id={cmd.chat_id}"
+            if result.state_changed:
+                detail = (
+                    f"Position closed via Telegram /close | "
+                    f"chat_id={cmd.chat_id}"
+                )
+            _record_event(result.action, detail)
+
+    handlers["close"] = close_handler
 
     def help_handler(cmd: TelegramCommand) -> None:
         """Handler for /help command."""

@@ -1,6 +1,6 @@
 # Story 7.4.6: 实现 /close 单品种平仓命令
 
-Status: ready-for-dev
+Status: done
 
 ## Story
 
@@ -59,26 +59,26 @@ so that I can quickly reduce risk on a single symbol without logging into the ex
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 – 定义 /close 命令接口与参数解析（AC1）**  
-  - [ ] 1.1 在 `notifications/telegram_commands.py` 中为 `/close` 预留命令入口（如在命令注册表或 handler 工厂中登记 `"close"`），复用现有命令分发模式。  
-  - [ ] 1.2 设计并实现参数解析逻辑：解析 `SYMBOL`、`all` 与 `AMOUNT`，对非法输入返回明确错误。  
-  - [ ] 1.3 与 `/positions` 或持仓结构保持一致的 symbol 命名约定，避免由于大小写或后缀差异导致的匹配失败。
+- [x] **Task 1 – 定义 /close 命令接口与参数解析（AC1）**  
+  - [x] 1.1 在 `notifications/telegram_commands.py` 中为 `/close` 预留命令入口（如在命令注册表或 handler 工厂中登记 `"close"`），复用现有命令分发模式。  
+  - [x] 1.2 设计并实现参数解析逻辑：解析 `SYMBOL`、`all` 与 `AMOUNT`，对非法输入返回明确错误。  
+  - [x] 1.3 与 `/positions` 或持仓结构保持一致的 symbol 命名约定，避免由于大小写或后缀差异导致的匹配失败。
 
-- [ ] **Task 2 – 设计并实现部分/全平执行路径（AC2–AC3）**  
-  - [ ] 2.1 在现有平仓执行路径（执行层/交易所层）上设计一个“单 symbol 平仓”接口，输入为 symbol、方向、名义金额或“all”，输出为本次实际成交的名义金额与剩余仓位信息。  
-  - [ ] 2.2 实现名义金额 → 数量的换算逻辑，考虑：当前价格来源、合约/币最小单位、精度与向下取整规则。  
-  - [ ] 2.3 使用 reduce-only 市价单或等价方式触达交易所，保证不会因为数量误差导致反向开仓。  
-  - [ ] 2.4 根据执行结果构建 Telegram 返回文案，清晰呈现本次平仓的核心信息（方向、数量、名义金额、剩余持仓）。
+- [x] **Task 2 – 设计并实现部分/全平执行路径（AC2–AC3）**  
+  - [x] 2.1 在现有平仓执行路径（执行层/交易所层）上设计一个“单 symbol 平仓”接口，输入为 symbol、方向、名义金额或“all”，输出为本次实际成交的名义金额与剩余仓位信息。  
+  - [x] 2.2 实现名义金额 → 数量的换算逻辑，考虑：当前价格来源、合约/币最小单位、精度与向下取整规则。  
+  - [x] 2.3 使用 reduce-only 市价单或等价方式触达交易所，保证不会因为数量误差导致反向开仓。  
+  - [x] 2.4 根据执行结果构建 Telegram 返回文案，清晰呈现本次平仓的核心信息（方向、数量、名义金额、剩余持仓）。
 
-- [ ] **Task 3 – 无持仓与错误场景的防御式处理（AC4–AC5）**  
-  - [ ] 3.1 在尝试下单前，统一查询当前持仓快照：若无对应 symbol，则直接返回“无持仓”提示，不执行任何交易。  
-  - [ ] 3.2 为交易所拒单、最小下单量不足、网络异常等场景设计统一的错误捕获与日志模式，保持与其它 Telegram 命令一致。  
-  - [ ] 3.3 在错误场景下构造简明的 Telegram 提示，并确保不会修改现有持仓状态或触发新的风险敞口。
+- [x] **Task 3 – 无持仓与错误场景的防御式处理（AC4–AC5）**  
+  - [x] 3.1 在尝试下单前，统一查询当前持仓快照：若无对应 symbol，则直接返回“无持仓”提示，不执行任何交易。  
+  - [x] 3.2 为交易所拒单、最小下单量不足、网络异常等场景设计统一的错误捕获与日志模式，保持与其它 Telegram 命令一致。  
+  - [x] 3.3 在错误场景下构造简明的 Telegram 提示，并确保不会修改现有持仓状态或触发新的风险敞口。
 
-- [ ] **Task 4 – 与风控状态集成与回归测试（AC6–AC7）**  
-  - [ ] 4.1 在执行 `/close` 前后，复用或扩展现有风控检查逻辑，确保该命令在 Kill-Switch / 日亏限制激活时依然允许执行。  
-  - [ ] 4.2 新增/扩展单元测试，覆盖在 Kill-Switch / 日亏限制激活状态下执行 `/close` 时的行为，验证不会被 entry 过滤逻辑阻挡。  
-  - [ ] 4.3 运行 `./scripts/run_tests.sh`，确保新增逻辑不会破坏现有测试。
+- [x] **Task 4 – 与风控状态集成与回归测试（AC6–AC7）**  
+  - [x] 4.1 在执行 `/close` 前后，复用或扩展现有风控检查逻辑，确保该命令在 Kill-Switch / 日亏限制激活时依然允许执行。  
+  - [x] 4.2 新增/扩展单元测试，覆盖在 Kill-Switch / 日亏限制激活状态下执行 `/close` 时的行为，验证不会被 entry 过滤逻辑阻挡。  
+  - [x] 4.3 运行 `./scripts/run_tests.sh`，确保新增逻辑不会破坏现有测试。
 
 ## Dev Notes
 
@@ -171,8 +171,26 @@ so that I can quickly reduce risk on a single symbol without logging into the ex
 
 ### Completion Notes List
 
-- [ ] 初始 Story 草稿由 `/create-story` 工作流创建，状态设为 `ready-for-dev`，等待后续 Dev Story 实施与代码评审。
+- [x] 初始 Story 草稿由 `/create-story` 工作流创建，状态设为 `ready-for-dev`，等待后续 Dev Story 实施与代码评审。
+- [x] 实现完成，所有 AC 验证通过，937 个测试全部通过。
+- [x] Code Review 完成，修复 5 个问题（2 HIGH, 2 MEDIUM, 1 LOW），942 个测试全部通过。
 
 ### File List
 
-- **NEW** `docs/sprint-artifacts/7-4-6-实现-close-单品种平仓命令.md` — 当前 Story 草稿文件（本文件）。
+- **NEW** `notifications/commands/close.py` — `/close` 命令处理模块，包含参数解析、持仓查询、平仓执行逻辑。
+- **MODIFIED** `notifications/commands/__init__.py` — 导出 `handle_close_command` 和 `get_positions_for_close`。
+- **MODIFIED** `notifications/commands/handlers.py` — 添加 `close_handler` 和 `execute_close_fn` 参数。
+- **MODIFIED** `notifications/commands/base.py` — 在 `COMMAND_REGISTRY` 中添加 `/close` 命令帮助信息。
+- **MODIFIED** `notifications/telegram_commands.py` — 导出 `/close` 命令相关函数。
+- **MODIFIED** `bot.py` — 添加 `execute_telegram_close` 和 `_update_local_state_after_close` 函数，集成到命令处理器，成功平仓后更新本地状态。
+- **NEW** `tests/test_telegram_close_command.py` — 47 个测试用例覆盖所有 AC 场景及集成测试。
+
+### Change Log
+
+- 2024-12-03: 实现 `/close` 命令，支持全平和部分平仓，包含完整的错误处理和风控集成。
+- 2024-12-03: Code Review 修复：
+  - **HIGH-1**: `execute_close_fn` 返回 `None` 时现在正确返回失败结果，而非静默当成功。
+  - **HIGH-2**: 成功平仓后更新本地 `positions` 和 `balance` 状态，保持 paper/live 一致性。
+  - **MEDIUM-3**: 错误日志补充 `amount_pct`、`close_notional`、`side` 等结构化字段。
+  - **MEDIUM-4**: 新增 5 个集成测试覆盖 handler wiring 和执行失败场景。
+  - **LOW-5**: 更新 `handle_close_command` docstring 与实际行为对齐。

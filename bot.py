@@ -201,7 +201,8 @@ _INTERVAL_TO_SECONDS = {
 
 # ───────────────────────── EXECUTION ─────────────────────────
 from execution.executor import TradeExecutor
-from execution.routing import check_stop_loss_take_profit_for_positions
+from execution.routing import check_stop_loss_take_profit_for_positions, route_live_close
+from exchange.base import CloseResult
 
 # ───────────────────────── DISPLAY ─────────────────────────
 from display.portfolio import (
@@ -450,6 +451,7 @@ def poll_telegram_commands() -> None:
                 daily_loss_limit_enabled=DAILY_LOSS_LIMIT_ENABLED,
                 daily_loss_limit_pct=DAILY_LOSS_LIMIT_PCT,
                 account_snapshot_fn=get_live_account_snapshot,
+                execute_close_fn=execute_telegram_close,
             )
             # Process commands with handlers
             process_telegram_commands(commands, command_handlers=command_handlers)
@@ -523,6 +525,7 @@ def _telegram_command_loop() -> None:
                     daily_loss_limit_enabled=DAILY_LOSS_LIMIT_ENABLED,
                     daily_loss_limit_pct=DAILY_LOSS_LIMIT_PCT,
                     account_snapshot_fn=get_live_account_snapshot,
+                    execute_close_fn=execute_telegram_close,
                 )
                 # Process commands with handlers
                 process_telegram_commands(commands, command_handlers=command_handlers)
@@ -700,6 +703,220 @@ def execute_entry(coin: str, decision: Dict, current_price: float) -> None:
 
 def execute_close(coin: str, decision: Dict, current_price: float) -> None:
     _get_executor().execute_close(coin, decision, current_price)
+
+
+def execute_telegram_close(coin: str, side: str, quantity: float) -> Optional[CloseResult]:
+    """Execute a position close from Telegram /close command.
+    
+    This function is specifically designed for the Telegram /close command,
+    which allows partial or full position closing via user command.
+    
+    Unlike execute_close() which is used by the trading loop and requires
+    a decision dict, this function directly executes a close with the
+    specified quantity.
+    
+    Args:
+        coin: Coin symbol (e.g., "BTC", "ETH").
+        side: Position side ("long" or "short").
+        quantity: Quantity to close (absolute value).
+        
+    Returns:
+        CloseResult on success (both paper and live modes),
+        None if execution failed (no symbol mapping, market data unavailable, etc.).
+        
+    Note:
+        This function is allowed to execute even when Kill-Switch is active,
+        as closing positions reduces risk exposure (AC6).
+        
+        On success, this function updates local positions and balance state
+        to keep paper/live state consistent.
+    """
+    global balance
+    
+    # Get current price for the coin
+    symbol = resolve_symbol_for_coin(coin)
+    if not symbol:
+        logging.warning(
+            "Telegram /close: no symbol mapping for coin %s",
+            coin,
+        )
+        return None
+    
+    data = fetch_market_data(symbol)
+    if not data:
+        logging.warning(
+            "Telegram /close: failed to fetch market data for %s",
+            symbol,
+        )
+        return None
+    
+    current_price = data.get("price", 0.0)
+    if current_price <= 0:
+        logging.warning(
+            "Telegram /close: invalid price for %s: %s",
+            symbol,
+            current_price,
+        )
+        return None
+    
+    # Check if live trading is enabled
+    is_live = (
+        (TRADING_BACKEND == "binance_futures" and BINANCE_FUTURES_LIVE)
+        or (TRADING_BACKEND == "backpack_futures" and BACKPACK_FUTURES_LIVE)
+        or (TRADING_BACKEND == "hyperliquid" and hyperliquid_trader.is_live)
+    )
+    
+    close_result: Optional[CloseResult] = None
+    
+    if not is_live:
+        # Paper trading mode - simulate close locally
+        logging.info(
+            "Telegram /close (paper): coin=%s | side=%s | quantity=%s | price=%s",
+            coin,
+            side,
+            quantity,
+            current_price,
+        )
+        close_result = CloseResult(
+            success=True,
+            backend="paper",
+            errors=[],
+            close_oid=None,
+            raw=None,
+            extra={"reason": "paper trading mode"},
+        )
+    else:
+        # Live trading - route to exchange
+        logging.info(
+            "Telegram /close (live): coin=%s | side=%s | quantity=%s | price=%s | backend=%s",
+            coin,
+            side,
+            quantity,
+            current_price,
+            TRADING_BACKEND,
+        )
+        
+        close_result = route_live_close(
+            coin=coin,
+            side=side,
+            quantity=quantity,
+            current_price=current_price,
+            trading_backend=TRADING_BACKEND,
+            binance_futures_live=BINANCE_FUTURES_LIVE,
+            backpack_futures_live=BACKPACK_FUTURES_LIVE,
+            hyperliquid_is_live=hyperliquid_trader.is_live,
+            get_binance_futures_exchange=get_binance_futures_exchange,
+            backpack_api_public_key=BACKPACK_API_PUBLIC_KEY,
+            backpack_api_secret_seed=BACKPACK_API_SECRET_SEED,
+            backpack_api_base_url=BACKPACK_API_BASE_URL,
+            backpack_api_window_ms=BACKPACK_API_WINDOW_MS,
+            hyperliquid_trader=hyperliquid_trader,
+            coin_to_symbol=COIN_TO_SYMBOL,
+        )
+        
+        if close_result is None:
+            return None
+    
+    # Update local state on successful close
+    if close_result is not None and close_result.success:
+        _update_local_state_after_close(coin, quantity, current_price)
+    
+    return close_result
+
+
+def _update_local_state_after_close(coin: str, closed_quantity: float, current_price: float) -> None:
+    """Update local positions and balance after a successful Telegram /close.
+    
+    This helper ensures paper and live state remain consistent after
+    a manual close via Telegram command.
+    
+    Args:
+        coin: Coin symbol that was closed.
+        closed_quantity: Quantity that was closed.
+        current_price: Price at which the close was executed.
+    """
+    global balance
+    
+    if coin not in positions:
+        logging.debug(
+            "Telegram /close: coin %s not in local positions, skipping state update",
+            coin,
+        )
+        return
+    
+    pos = positions[coin]
+    total_quantity = abs(float(pos.get("quantity", 0) or 0))
+    
+    if total_quantity <= 0:
+        # Position already empty, just remove it
+        del positions[coin]
+        save_state()
+        return
+    
+    # Calculate PnL for the closed portion
+    entry_price = float(pos.get("entry_price", 0) or 0)
+    pos_side = str(pos.get("side", "")).lower()
+    
+    if pos_side == "long":
+        pnl_per_unit = current_price - entry_price
+    elif pos_side == "short":
+        pnl_per_unit = entry_price - current_price
+    else:
+        pnl_per_unit = 0.0
+    
+    closed_pnl = pnl_per_unit * closed_quantity
+    
+    # Calculate proportional margin and fees to return
+    margin = float(pos.get("margin", 0) or 0)
+    fees_paid = float(pos.get("fees_paid", 0) or 0)
+    fee_rate = float(pos.get("fee_rate", TAKER_FEE_RATE) or TAKER_FEE_RATE)
+    
+    close_ratio = min(closed_quantity / total_quantity, 1.0)
+    margin_returned = margin * close_ratio
+    fees_returned = fees_paid * close_ratio
+    
+    # Estimate exit fee
+    exit_fee = closed_quantity * current_price * fee_rate
+    
+    # Net PnL after fees
+    net_pnl = closed_pnl - exit_fee
+    
+    # Update balance
+    balance_delta = margin_returned + net_pnl
+    balance += balance_delta
+    _core_state.balance = balance
+    
+    logging.info(
+        "Telegram /close state update: coin=%s | closed_qty=%s | pnl=%.2f | "
+        "exit_fee=%.2f | net_pnl=%.2f | margin_returned=%.2f | new_balance=%.2f",
+        coin,
+        closed_quantity,
+        closed_pnl,
+        exit_fee,
+        net_pnl,
+        margin_returned,
+        balance,
+    )
+    
+    remaining_quantity = total_quantity - closed_quantity
+    
+    if remaining_quantity <= 0.0001:  # Effectively zero (handle floating point)
+        # Full close - remove position
+        del positions[coin]
+        logging.info("Telegram /close: position %s fully closed and removed", coin)
+    else:
+        # Partial close - update position
+        positions[coin]["quantity"] = remaining_quantity
+        positions[coin]["margin"] = margin - margin_returned
+        positions[coin]["fees_paid"] = fees_paid - fees_returned
+        logging.info(
+            "Telegram /close: position %s partially closed, remaining_qty=%s",
+            coin,
+            remaining_quantity,
+        )
+    
+    # Persist state
+    save_state()
 
 
 def process_ai_decisions(

@@ -55,6 +55,10 @@ from notifications.commands.symbols import (
     handle_symbols_remove_command,
 )
 from notifications.commands.audit import handle_audit_command
+from notifications.commands.close import (
+    handle_close_command,
+    get_positions_for_close,
+)
 
 __all__ = [
     # Core classes
@@ -91,6 +95,8 @@ __all__ = [
     "handle_symbols_add_command",
     "handle_symbols_remove_command",
     "handle_audit_command",
+    "handle_close_command",
+    "get_positions_for_close",
     # Config constants
     "CONFIG_KEY_DESCRIPTIONS",
     "CONFIG_KEYS_FOR_TELEGRAM",

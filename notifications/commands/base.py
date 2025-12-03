@@ -392,6 +392,8 @@ COMMAND_REGISTRY: list[tuple[str, str]] = [
     ("/status", "查看 Bot 资金与盈利状态"),
     ("/balance", "查看当前账户余额与持仓概要"),
     ("/positions", "查看当前所有持仓详情"),
+    ("/close SYMBOL", "全平指定品种持仓"),
+    ("/close SYMBOL AMOUNT", "部分平仓（AMOUNT 为百分比 0\\-100）"),
     ("/risk", "查看风控配置与状态"),
     ("/kill", "激活 Kill\\-Switch，暂停所有新开仓"),
     ("/resume", "解除 Kill\\-Switch 并恢复新开仓"),
