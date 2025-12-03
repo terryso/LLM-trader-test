@@ -501,17 +501,6 @@ class TelegramCommandHandler:
 **Acceptance Criteria**:
 - [ ] `/kill` 命令激活 Kill-Switch
 - [ ] `/resume` 命令在 Kill-Switch 激活且未被每日亏损限制阻挡时直接解除 Kill-Switch
-- [ ] 命令执行后发送确认消息
-- [ ] 添加单元测试
-
-**Technical Notes**:
-```python
-def handle_command(command: str, args: List[str]) -> str:
-    if command == "kill":
-        activate_kill_switch(risk_control_state, "Manual trigger via Telegram")
-        return "✅ Kill-Switch 已激活"
-    
-    elif command == "resume":
         if args and args[0] == "confirm":
             if deactivate_kill_switch(risk_control_state):
                 return "✅ Kill-Switch 已解除，交易恢复"
@@ -621,6 +610,100 @@ def handle_command(chat_id: str, command: str, args: List[str]) -> Optional[str]
         return HELP_MESSAGE
     # ... 其他命令处理
 ```
+
+---
+
+### Story 7.4.6: 实现 /close 单品种平仓命令
+
+**As a** user  
+**I want** to partially or fully close a specific position via Telegram  
+**So that** I can quickly reduce risk on a single symbol without logging into the exchange
+
+**Acceptance Criteria**:
+- [ ] 支持命令格式：`/close SYMBOL all` 与 `/close SYMBOL AMOUNT`：  
+  - `SYMBOL` 使用与当前持仓结构一致的标识（如 `BTCUSDT`）；  
+  - `all` 表示对该品种当前持仓执行全平；  
+  - `AMOUNT` 表示名义金额（USDT），用于部分平仓。
+- [ ] 当 `AMOUNT` 小于当前名义仓位时：  
+  - 计算对应需要成交的数量（合约张数或币数量），按统一规则向下取整至交易所最小单位；  
+  - 下发 reduce-only 市价单（或等价实现）执行部分平仓；  
+  - 返回消息中包含：本次实际平仓名义金额、估算成交数量、平仓后剩余持仓的方向与名义金额。
+- [ ] 当 `AMOUNT` 大于等于当前名义仓位时：  
+  - 退化执行为全平；  
+  - 返回消息需明确提示“请求金额 >= 当前仓位名义，已执行全平”。
+- [ ] 当该 `SYMBOL` 当前无持仓时：  
+  - 不执行任何交易；  
+  - 返回清晰提示（例如“当前无 BTCUSDT 持仓，未执行平仓操作”）。
+- [ ] 命令执行过程中的错误（如交易所拒单、最小下单量不足、网络异常）会：  
+  - 记录结构化日志（包含 symbol、请求金额、错误原因）；  
+  - 在 Telegram 中返回简明错误信息，但不会导致 Bot 主循环退出。
+- [ ] 与风控联动：  
+  - Kill-Switch / 日亏限制激活时，`/close` 仍允许执行（因为只减仓或平仓），不会被 entry 过滤逻辑阻挡。
+
+---
+
+### Story 7.4.7: 实现 /close_all 一键全平命令
+
+**As a** user  
+**I want** to close all or directional positions via a confirmed Telegram command  
+**So that** I can quickly exit the market in extreme conditions
+
+**Acceptance Criteria**:
+- [ ] 支持命令格式：  
+  - `/close_all`（默认 all 方向预览）；  
+  - `/close_all long`（仅预览多头持仓）；  
+  - `/close_all short`（仅预览空头持仓）。
+- [ ] 初次收到不带 `confirm` 的命令时：  
+  - 不执行任何真实平仓操作；  
+  - 汇总将被影响的持仓数量与总名义金额（USDT），按 long/short 方向分组展示；  
+  - 返回消息中给出清晰的确认提示，例如要求用户输入：`/close_all confirm`、`/close_all long confirm`、`/close_all short confirm`。
+- [ ] 收到带 `confirm` 的命令时：  
+  - 再次基于最新持仓快照计算将被平掉的仓位；  
+  - 遍历匹配条件的持仓，对每个 symbol 下发 reduce-only 市价单（或等价实现）执行全平；  
+  - 对每个成功/失败的 symbol 记录结果，用于日志与返回文案。
+- [ ] 当确认命令对应范围内没有任何持仓时：  
+  - 不发送订单；  
+  - 返回“当前无可平仓位”的提示信息。
+- [ ] 错误与部分失败处理：  
+  - 若部分 symbol 平仓失败，返回消息需显式标记“部分失败”，并列举少量代表性错误；  
+  - 日志中保留完整明细，包含 symbol、方向、名义金额、错误原因。
+- [ ] 与 Kill-Switch 联动：  
+  - 推荐文案中提示在极端情形下的标准操作顺序（例如先 `/kill` 再 `/close_all confirm`）；  
+  - `/close_all` 在 Kill-Switch 激活状态下仍允许执行，以便快速减仓或清仓。
+
+---
+
+### Story 7.4.8: 实现 /sl /tp /tpsl 止盈止损管理命令
+
+**As a** user  
+**I want** to manage stop loss and take profit for existing positions via Telegram  
+**So that** I can protect and adjust positions remotely without logging into the exchange
+
+**Acceptance Criteria**:
+- [ ] 支持止损命令 `/sl`：  
+  - 价格模式：`/sl SYMBOL price VALUE`，直接将 `VALUE` 作为新的止损价；  
+  - 百分比模式：`/sl SYMBOL pct VALUE`，按当前价格乘以 `(1 + VALUE/100)` 计算止损价；  
+  - 简写模式：`/sl SYMBOL VALUE`，当 `VALUE` 以 `%` 结尾时视为百分比，否则视为价格。
+- [ ] 支持止盈命令 `/tp`：  
+  - 与 `/sl` 对称的 `price` / `pct` / 简写模式；  
+  - 百分比模式下，对多单通常为正百分比（上浮），对空单为负百分比（下移）。
+- [ ] 支持组合命令 `/tpsl SYMBOL SL_VALUE TP_VALUE`：  
+  - 当两个参数都为百分比（带 `%`）时，按百分比模式为多空仓分别计算 SL/TP 价格；  
+  - 当两个参数都为价格（无 `%`）时，直接作为目标价格；  
+  - 如果一个参数是价格、一个是百分比，当前版本需返回错误提示，要求用户统一模式。
+- [ ] 对无持仓的 symbol：  
+  - `/sl`、`/tp`、`/tpsl` 均不执行任何修改；  
+  - 返回“当前无该品种持仓，无法设置 TP/SL”的提示。
+- [ ] 价格合理性校验：  
+  - 对多仓：止损价应低于当前价一定安全距离，止盈价应高于当前价；  
+  - 对空仓：止损价应高于当前价，止盈价应低于当前价；  
+  - 明显异常（如多仓止损价高于当前价很大幅度）时拒绝更新并返回错误说明。
+- [ ] 命令执行成功时：  
+  - Telegram 返回文案中需包含：新 SL/TP 价格、相对当前价的百分比距离、原 SL/TP 值（若存在）；  
+  - 内部更新持仓结构中的 `profit_target` / `stop_loss` 字段，确保后续 SL/TP 检查逻辑生效。
+- [ ] 命令执行失败或异常时：  
+  - 不修改任何现有 TP/SL 配置；  
+  - 记录结构化日志用于排查。
 
 ---
 

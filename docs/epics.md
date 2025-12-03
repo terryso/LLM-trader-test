@@ -32,6 +32,9 @@
 - **FR-OPS2：可配置交易对 Universe & Telegram 管理**  
   系统应支持将可交易的合约/币对清单从代码中解耦出来，通过配置与 Telegram 命令进行管理，只影响 Paper / Live 模式的交易 Universe；新增交易对时需通过当前 `MARKET_DATA_BACKEND` 所在交易所/数据源校验其合法性，删除交易对仅阻止后续新开仓而不会强制平掉已有持仓。
 
+- **FR-OPS3：Telegram 仓位平仓与 TP/SL 远程控制**  
+  系统应支持通过 Telegram 命令对单个或全部持仓执行平仓操作，并为单个品种配置/调整止盈止损；数量以名义金额（USDT）为主，同时提供一键全平与 TP/SL 组合命令，以便在无需登录交易所的情况下完成大部分日常仓位管理与应急风控动作。
+
 ---
 
 ## FR Coverage Map
@@ -319,6 +322,7 @@ So that switching or adding exchanges is predictable and low-risk.
 | FR13    | Epic 6: 统一交易所执行层 & 多交易所可插拔支持                  | Story 6.1–6.5         |
 | FR-OPS1 | Epic 8: Telegram 远程运营配置管理（Runtime Config Control）    | Story 8.1–8.4         |
 | FR-OPS2 | Epic 9: 可配置交易对 Universe & Telegram 管理                  | Story 9.1–9.4         |
+| FR-OPS3 | Epic 7: 风控系统增强（Emergency Controls）                      | Story 7.4.1–7.4.8     |
 
 ---
 
@@ -693,5 +697,17 @@ So that the behavior is reliable and clearly communicated.
 - 7-4-3 实现 status 命令（展示当前风控状态与关键字段）  
 - 7-4-4 实现 reset-daily 命令（重置每日亏损基准）  
 - 7-4-5 实现 help 命令和安全校验
+
+- 7-4-6 实现单品种平仓命令 `/close SYMBOL [AMOUNT|all]`  
+  - 支持按名义金额（USDT）部分平仓与全平；当 `AMOUNT` 大于当前名义仓位时退化为全平并在文案中说明；
+  - 保证在 Kill-Switch / 每日亏损限制等风控机制生效时不会突破全局风险约束。
+
+- 7-4-7 实现一键全平命令 `/close_all [long|short|all]`（含确认流程）  
+  - 第一次调用返回将被平掉的持仓数量与总名义金额预览，并提示使用 `confirm` 形式完成执行；
+  - 支持仅平多头或空头方向（long/short），并与 Kill-Switch 联动用作极端行情下的应急拉闸工具。
+
+- 7-4-8 实现 TP/SL 管理命令 `/sl` `/tp` `/tpsl`  
+  - 支持按价格与按百分比两种模式为单个品种设置/调整止损与止盈；
+  - `/tpsl` 支持一次性配置 TP+SL，要求两者模式一致或返回清晰错误提示，所有价格需要通过合理性校验避免误触极端价位。
 
 > 整个 Epic 7.4 为 **post-MVP**，在 Kill-Switch + 日亏逻辑稳定后作为 UX/操控能力增强。

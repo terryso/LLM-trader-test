@@ -144,73 +144,11 @@
 - **FR22**: 系统支持通过 Telegram Webhook 或轮询接收用户命令
 - **FR23**: 系统仅响应来自 `TELEGRAM_CHAT_ID` 的命令（安全校验）
 - **FR24**: 未知命令返回帮助信息，列出可用命令
-
----
-
-## 非功能需求
-
-### 性能
-
-- **NFR1**: 风控状态检查在每次迭代中增加的延迟 < 100ms
-- **NFR2**: Telegram 命令响应时间 < 3 秒
-
-### 可靠性
-
-- **NFR3**: 风控状态持久化使用原子写入，防止数据损坏
-- **NFR4**: 网络故障不影响本地风控逻辑执行
-
-### 安全性
-
-- **NFR5**: Telegram 命令仅接受来自配置的 Chat ID
-- **NFR6**: 敏感操作（如 `/resume`）应受风险控制策略约束（例如每日亏损限制阻挡恢复），防止误操作
-
-### 可观测性
-
-- **NFR7**: 风控状态变更有完整的日志记录
-- **NFR8**: 仪表盘显示当前风控状态
-
-### 兼容性
-
-- **NFR9**: 新增环境变量有合理默认值，不破坏现有部署
-- **NFR10**: 风控功能可通过配置完全禁用
-
----
-
-## 技术设计要点
-
-### 数据结构
-
-```python
-@dataclass
-class RiskControlState:
-    kill_switch_active: bool = False
-    kill_switch_reason: Optional[str] = None
-    kill_switch_triggered_at: Optional[datetime] = None
-    
-    daily_start_equity: Optional[float] = None
-    daily_start_date: Optional[str] = None  # YYYY-MM-DD
-    daily_loss_pct: float = 0.0
-    daily_loss_triggered: bool = False
-```
-
-### 环境变量
-
-| 变量名 | 类型 | 默认值 | 描述 |
-|--------|------|--------|------|
-| `KILL_SWITCH` | bool | `false` | 启动时是否激活 Kill-Switch |
-| `DAILY_LOSS_LIMIT_PCT` | float | `5.0` | 每日最大亏损百分比 |
-| `DAILY_LOSS_LIMIT_ENABLED` | bool | `true` | 是否启用每日亏损限制 |
-| `RISK_CONTROL_ENABLED` | bool | `true` | 是否启用风控系统 |
-
-### Telegram 命令
-
-| 命令 | 描述 | 示例 |
-|------|------|------|
-| `/kill` | 触发 Kill-Switch | `/kill` |
-| `/resume` | 解除 Kill-Switch（单步命令，兼容旧的 `/resume confirm` 形式） | `/resume` |
-| `/status` | 查看风控状态 | `/status` |
-| `/reset_daily` | 重置每日亏损基准 | `/reset_daily` |
-| `/help` | 显示帮助信息 | `/help` |
+- **FR25**: 用户可以通过 Telegram 命令查看当前所有持仓详情（包括方向、数量、TP/SL、杠杆、保证金与风险等关键字段），用于辅助远程决策（对应 `/positions` 命令）
+- **FR26**: 用户可以通过 Telegram 命令 `/close SYMBOL [AMOUNT|all]` 对单个品种执行部分或全部平仓，`AMOUNT` 为名义金额（USDT），`all` 表示全平，当请求金额超过当前名义仓位时退化为全平并在文案中说明
+- **FR27**: 用户可以通过 Telegram 命令 `/close_all [long|short|all]` 在二次确认的前提下一键平掉全部或指定方向（多/空）的持仓，并在执行前给出将被影响的持仓数量与总名义金额预览
+- **FR28**: 用户可以通过 Telegram 命令 `/sl SYMBOL ...` 与 `/tp SYMBOL ...` 为单个品种设置或调整止损与止盈，支持按价格与按相对当前价的百分比两种模式，并对明显不合理的价格进行校验与拒绝
+- **FR29**: 用户可以通过 Telegram 命令 `/tpsl SYMBOL SL_VALUE TP_VALUE` 一次性为单个品种配置止损与止盈参数（价格或百分比），内部逻辑应保证两者模式一致或给出清晰错误提示
 
 #### `/balance` 实盘账户视角（已实现）
 

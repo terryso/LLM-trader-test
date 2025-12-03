@@ -2992,70 +2992,26 @@ def create_kill_resume_handlers(
                         if leverage <= 0.0 or leverage != leverage:
                             leverage = 1.0
 
-                        # 盈亏：优先使用总盈亏（netExposureNotional - netCost 或 pnlRealized + pnlUnrealized），
-                        # 若缺失再回退到 pnlUnrealized 或 markPrice/entryPrice/方向
+                        # 盈亏：简单使用交易所提供的 pnlRealized + pnlUnrealized
                         pnl = 0.0
-                        pnl_computed = False
+                        realized = 0.0
+                        unrealized = 0.0
+                        realized_val = pos.get("pnlRealized")
+                        unrealized_val = pos.get("pnlUnrealized")
 
-                        # 1) 首选 netExposureNotional - netCost
-                        exposure_notional_val = pos.get("netExposureNotional")
-                        net_cost_val = pos.get("netCost")
-                        if exposure_notional_val is not None and net_cost_val is not None:
+                        if realized_val is not None:
                             try:
-                                exposure_notional = float(exposure_notional_val)
-                                net_cost = float(net_cost_val)
-                                pnl = exposure_notional - net_cost
-                                pnl_computed = True
+                                realized = float(realized_val)
                             except (TypeError, ValueError):
-                                pnl_computed = False
+                                realized = 0.0
 
-                        # 2) 其次尝试 pnlRealized + pnlUnrealized
-                        if not pnl_computed:
-                            realized_val = pos.get("pnlRealized")
-                            unrealized_val = pos.get("pnlUnrealized")
-                            have_any = False
-                            realized = 0.0
-                            unrealized = 0.0
-                            if realized_val is not None:
-                                try:
-                                    realized = float(realized_val)
-                                    have_any = True
-                                except (TypeError, ValueError):
-                                    pass
-                            if unrealized_val is not None:
-                                try:
-                                    unrealized = float(unrealized_val)
-                                    have_any = True
-                                except (TypeError, ValueError):
-                                    pass
-                            if have_any:
-                                pnl = realized + unrealized
-                                pnl_computed = True
-
-                        # 3) 再次退回到单独的 pnlUnrealized
-                        if not pnl_computed:
-                            pnl_val = pos.get("pnlUnrealized")
-                            if pnl_val is not None:
-                                try:
-                                    pnl = float(pnl_val)
-                                    pnl_computed = True
-                                except (TypeError, ValueError):
-                                    pnl = 0.0
-
-                        # 4) 最后兜底，用 markPrice/entryPrice/方向 估算
-                        if not pnl_computed:
+                        if unrealized_val is not None:
                             try:
-                                mark_price = float(pos.get("markPrice", 0.0) or 0.0)
+                                unrealized = float(unrealized_val)
                             except (TypeError, ValueError):
-                                mark_price = 0.0
+                                unrealized = 0.0
 
-                            if entry_price > 0.0 and mark_price > 0.0 and quantity > 0.0:
-                                side_sign = 1.0 if side == "long" else -1.0
-                                try:
-                                    pnl = (mark_price - entry_price) * side_sign * quantity
-                                    pnl_computed = True
-                                except Exception:  # noqa: BLE001
-                                    pnl = 0.0
+                        pnl = realized + unrealized
 
                         # 强平价：直接使用官方字段 estLiquidationPrice
                         try:
