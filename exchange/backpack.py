@@ -527,111 +527,139 @@ class BackpackFuturesExchangeClient:
         new_sl: Optional[float] = None,
         new_tp: Optional[float] = None,
     ) -> TPSLResult:
-        """Update stop loss and/or take profit for a position.
-        
-        Creates conditional orders on Backpack Futures for SL/TP.
-        First cancels any existing SL/TP orders for the position, then creates new ones.
-        
-        Args:
-            coin: Coin symbol (e.g., "BTC", "ETH").
-            side: Position side ("long" or "short").
-            quantity: Position quantity for the SL/TP orders.
-            new_sl: New stop loss price, or None to skip.
-            new_tp: New take profit price, or None to skip.
-            
-        Returns:
-            TPSLResult with success status and order IDs.
+        """Update stop loss and/or take profit for a position (Backpack).
+
+        Note:
+            The Backpack HTTP API does not currently expose a stable, well-
+            documented way to create standalone TP/SL conditional orders for an
+            existing futures position via `orderExecute` without risking
+            immediate market execution. To avoid意外直接平仓, this method
+            intentionally does **not** send any live TP/SL orders at the
+            moment and instead reports that exchange-level TP/SL is not
+            supported.
+
+            Users should set TP/SL directly in the Backpack UI for now.
         """
         symbol = self._coin_to_symbol(coin)
-        errors: List[str] = []
-        sl_order_id = None
-        tp_order_id = None
-        raw_results: Dict[str, Any] = {}
-        
-        if new_sl is None and new_tp is None:
+        side_normalized = (side or "").lower()
+        order_side = "Ask" if side_normalized == "long" else "Bid"
+
+        # Fast path: nothing to update
+        if (new_sl is None or new_sl <= 0) and (new_tp is None or new_tp <= 0):
             return TPSLResult(
                 success=True,
                 backend="backpack_futures",
                 errors=[],
-                raw={"reason": "no SL/TP values provided"},
+                raw={"reason": "no TP/SL values provided"},
             )
-        
-        # Determine order side (opposite of position side for closing)
-        # Backpack uses "Bid" for buy, "Ask" for sell
-        close_side = "Ask" if side.lower() == "long" else "Bid"
-        
-        # Cancel existing SL/TP orders first
+
+        # Format quantity according to market filters
+        try:
+            quantity_str = self._format_quantity(symbol, quantity)
+        except Exception as exc:  # noqa: BLE001
+            logging.error("Backpack TP/SL: invalid quantity for %s: %s", symbol, exc)
+            return TPSLResult(
+                success=False,
+                backend="backpack_futures",
+                errors=[f"quantity: {exc}"],
+                raw={"reason": "invalid_quantity"},
+            )
+
+        # Try to get tick size for price formatting
+        price_tick: Optional[Decimal] = None
+        filters = self._get_market_filters(symbol)
+        if isinstance(filters, dict):
+            price_filters = filters.get("price")
+            if isinstance(price_filters, dict):
+                tick_str = price_filters.get("tickSize")
+                if isinstance(tick_str, str):
+                    try:
+                        price_tick = Decimal(tick_str)
+                    except Exception:  # noqa: BLE001
+                        price_tick = None
+
+        def _format_price(value: float) -> str:
+            """Format price using market tick size if available."""
+            price_dec = Decimal(str(value))
+            if price_tick is not None and price_tick > 0:
+                units = (price_dec / price_tick).to_integral_value(rounding=ROUND_DOWN)
+                price_dec = units * price_tick
+            exponent = price_dec.as_tuple().exponent
+            decimals = -exponent if exponent < 0 else 0
+            decimals = min(decimals, 8)
+            fmt = "{0:." + str(decimals) + "f}"
+            price_str = fmt.format(price_dec)
+            return price_str.rstrip("0").rstrip(".")
+
+        # Cancel existing reduce-only conditional TP/SL orders for this symbol
         try:
             self._cancel_existing_tpsl_orders(symbol)
-        except Exception as e:
-            logging.warning("Failed to cancel existing TP/SL orders for %s: %s", symbol, e)
-        
-        quantity_str = self._format_quantity(symbol, quantity)
-        
-        # Create Stop Loss order (conditional order with SL trigger)
+        except Exception as exc:  # noqa: BLE001
+            logging.warning(
+                "Backpack TP/SL: failed to cancel existing conditional orders for %s: %s",
+                symbol,
+                exc,
+            )
+
+        errors: List[str] = []
+        sl_order_id: Optional[Any] = None
+        tp_order_id: Optional[Any] = None
+        raw_results: Dict[str, Any] = {}
+
+        base_body: Dict[str, Any] = {
+            "symbol": symbol,
+            "side": order_side,
+            "quantity": quantity_str,
+            "reduceOnly": True,
+            "timeInForce": "GTC",
+        }
+
+        # Create Stop Loss order (reduce-only conditional)
         if new_sl is not None and new_sl > 0:
             try:
-                sl_body: Dict[str, Any] = {
-                    "symbol": symbol,
-                    "side": close_side,
-                    "orderType": "Market",
-                    "quantity": quantity_str,
-                    "reduceOnly": True,
-                    # Use dedicated Backpack stop loss trigger fields instead of generic triggerPrice
-                    "stopLossTriggerPrice": str(new_sl),
-                    "stopLossTriggerBy": "LastPrice",
-                }
+                sl_price_str = _format_price(new_sl)
+                sl_body = dict(base_body)
+                sl_body["orderType"] = "Market"
+                sl_body["triggerPrice"] = sl_price_str
                 sl_raw = self._post_order(sl_body)
-                sl_errors = self._collect_order_errors(sl_raw, "SL")
-                if not sl_errors:
+                raw_results["sl_order"] = sl_raw
+                sl_errors = self._collect_order_errors(sl_raw, "stop_loss")
+                errors.extend(sl_errors)
+                if not sl_errors and isinstance(sl_raw, dict):
                     sl_order_id = sl_raw.get("id")
-                    raw_results["sl_order"] = sl_raw
-                    logging.info(
-                        "Backpack SL order created: %s %s @ %s, order_id=%s",
-                        symbol, close_side, new_sl, sl_order_id,
-                    )
-                else:
-                    errors.extend(sl_errors)
-            except Exception as e:
-                error_msg = f"SL order failed: {e}"
-                errors.append(error_msg)
-                logging.error("Backpack %s: %s", symbol, error_msg)
-        
-        # Create Take Profit order (conditional order with TP trigger)
+            except Exception as exc:  # noqa: BLE001
+                msg = f"stop_loss: {exc}"
+                logging.error("Backpack TP/SL: failed to create SL order for %s: %s", symbol, exc)
+                errors.append(msg)
+
+        # Create Take Profit order as reduce-only limit order at target price
         if new_tp is not None and new_tp > 0:
             try:
-                tp_body: Dict[str, Any] = {
-                    "symbol": symbol,
-                    "side": close_side,
-                    "orderType": "Market",
-                    "quantity": quantity_str,
-                    "reduceOnly": True,
-                    # Use dedicated Backpack take profit trigger fields instead of generic triggerPrice
-                    "takeProfitTriggerPrice": str(new_tp),
-                    "takeProfitTriggerBy": "LastPrice",
-                }
+                tp_price_str = _format_price(new_tp)
+                tp_body = dict(base_body)
+                tp_body["orderType"] = "Limit"
+                tp_body["price"] = tp_price_str
                 tp_raw = self._post_order(tp_body)
-                tp_errors = self._collect_order_errors(tp_raw, "TP")
-                if not tp_errors:
+                raw_results["tp_order"] = tp_raw
+                tp_errors = self._collect_order_errors(tp_raw, "take_profit")
+                errors.extend(tp_errors)
+                if not tp_errors and isinstance(tp_raw, dict):
                     tp_order_id = tp_raw.get("id")
-                    raw_results["tp_order"] = tp_raw
-                    logging.info(
-                        "Backpack TP order created: %s %s @ %s, order_id=%s",
-                        symbol, close_side, new_tp, tp_order_id,
-                    )
-                else:
-                    errors.extend(tp_errors)
-            except Exception as e:
-                error_msg = f"TP order failed: {e}"
-                errors.append(error_msg)
-                logging.error("Backpack %s: %s", symbol, error_msg)
-        
-        # Success if at least one order was created without errors
-        success = (
-            (new_sl is None or sl_order_id is not None) and
-            (new_tp is None or tp_order_id is not None)
-        )
-        
+            except Exception as exc:  # noqa: BLE001
+                msg = f"take_profit: {exc}"
+                logging.error("Backpack TP/SL: failed to create TP order for %s: %s", symbol, exc)
+                errors.append(msg)
+
+        errors = self._deduplicate_errors(errors)
+
+        success = True
+        if errors:
+            success = False
+        if new_sl is not None and new_sl > 0 and sl_order_id is None:
+            success = False
+        if new_tp is not None and new_tp > 0 and tp_order_id is None:
+            success = False
+
         return TPSLResult(
             success=success,
             backend="backpack_futures",
@@ -671,7 +699,9 @@ class BackpackFuturesExchangeClient:
                     or order.get("stopLossTriggerPrice")
                     or order.get("takeProfitTriggerPrice")
                 )
-                if has_trigger and order.get("reduceOnly"):
+                is_reduce_only = bool(order.get("reduceOnly"))
+                is_limit_reduce_only = is_reduce_only and order.get("orderType") == "Limit"
+                if is_reduce_only and (has_trigger or is_limit_reduce_only):
                     order_id = order.get("id")
                     if order_id:
                         self._cancel_order(symbol, order_id)
