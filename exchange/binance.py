@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from exchange.base import EntryResult, CloseResult, Position, AccountSnapshot
+from exchange.base import EntryResult, CloseResult, Position, AccountSnapshot, TPSLResult
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -167,6 +167,134 @@ class BinanceFuturesExchangeClient:
         except Exception as e:
             logging.warning("Failed to get price for %s: %s", symbol, e)
             return None
+
+    def update_tpsl(
+        self,
+        coin: str,
+        side: str,
+        quantity: float,
+        new_sl: Optional[float] = None,
+        new_tp: Optional[float] = None,
+    ) -> TPSLResult:
+        """Update stop loss and/or take profit for a position.
+        
+        Creates STOP_MARKET and/or TAKE_PROFIT_MARKET orders on Binance Futures.
+        First cancels any existing SL/TP orders for the position, then creates new ones.
+        
+        Args:
+            coin: Coin symbol (e.g., "BTC", "ETH").
+            side: Position side ("long" or "short").
+            quantity: Position quantity for the SL/TP orders.
+            new_sl: New stop loss price, or None to skip.
+            new_tp: New take profit price, or None to skip.
+            
+        Returns:
+            TPSLResult with success status and order IDs.
+        """
+        symbol = f"{coin}USDT"
+        errors: List[str] = []
+        sl_order_id = None
+        tp_order_id = None
+        raw_results: Dict[str, Any] = {}
+        
+        if new_sl is None and new_tp is None:
+            return TPSLResult(
+                success=True,
+                backend="binance_futures",
+                errors=[],
+                raw={"reason": "no SL/TP values provided"},
+            )
+        
+        # Determine order side (opposite of position side for closing)
+        close_side = "sell" if side.lower() == "long" else "buy"
+        position_side = "LONG" if side.lower() == "long" else "SHORT"
+        
+        # Cancel existing SL/TP orders first
+        try:
+            self._cancel_existing_tpsl_orders(symbol, position_side)
+        except Exception as e:
+            logging.warning("Failed to cancel existing TP/SL orders for %s: %s", symbol, e)
+            # Continue anyway - new orders might still work
+        
+        def _place_tpsl_order(
+            order_type: str,
+            stop_price: float,
+            label: str,
+        ) -> Optional[Any]:
+            """Place TP/SL order helper."""
+            params = {
+                "stopPrice": stop_price,
+                "positionSide": position_side,
+            }
+            try:
+                return self._exchange.create_order(
+                    symbol=symbol,
+                    type=order_type,
+                    side=close_side,
+                    amount=quantity,
+                    params=params,
+                )
+            except Exception as exc:
+                error_msg = f"{label} order failed: {exc}"
+                errors.append(error_msg)
+                logging.error("Binance %s: %s", symbol, error_msg)
+                return None
+        
+        # Create Stop Loss order
+        if new_sl is not None and new_sl > 0:
+            sl_order = _place_tpsl_order("STOP_MARKET", new_sl, "SL")
+            if sl_order is not None:
+                sl_order_id = self._extract_order_id(sl_order)
+                raw_results["sl_order"] = sl_order
+                logging.info(
+                    "Binance SL order created: %s %s @ %s, order_id=%s",
+                    symbol, close_side, new_sl, sl_order_id,
+                )
+        
+        # Create Take Profit order
+        if new_tp is not None and new_tp > 0:
+            tp_order = _place_tpsl_order("TAKE_PROFIT_MARKET", new_tp, "TP")
+            if tp_order is not None:
+                tp_order_id = self._extract_order_id(tp_order)
+                raw_results["tp_order"] = tp_order
+                logging.info(
+                    "Binance TP order created: %s %s @ %s, order_id=%s",
+                    symbol, close_side, new_tp, tp_order_id,
+                )
+        
+        # Success if at least one order was created without errors
+        success = (
+            (new_sl is None or sl_order_id is not None) and
+            (new_tp is None or tp_order_id is not None)
+        )
+        
+        return TPSLResult(
+            success=success,
+            backend="binance_futures",
+            errors=errors,
+            sl_order_id=sl_order_id,
+            tp_order_id=tp_order_id,
+            raw=raw_results,
+        )
+
+    def _cancel_existing_tpsl_orders(self, symbol: str, position_side: str) -> None:
+        """Cancel existing SL/TP orders for a position."""
+        try:
+            open_orders = self._exchange.fetch_open_orders(symbol)
+            for order in open_orders:
+                order_type = str(order.get("type", "")).upper()
+                order_info = order.get("info", {})
+                order_position_side = order_info.get("positionSide", "")
+                
+                # Only cancel STOP_MARKET and TAKE_PROFIT_MARKET orders for this position
+                if order_type in ("STOP_MARKET", "TAKE_PROFIT_MARKET"):
+                    if order_position_side == position_side:
+                        order_id = order.get("id")
+                        if order_id:
+                            self._exchange.cancel_order(order_id, symbol)
+                            logging.debug("Cancelled existing %s order %s", order_type, order_id)
+        except Exception as e:
+            logging.warning("Error cancelling existing TP/SL orders: %s", e)
 
     @staticmethod
     def _deduplicate_errors(errors: List[str]) -> List[str]:

@@ -836,8 +836,8 @@ def update_telegram_tpsl(
 ) -> "TPSLUpdateResult":
     """Update stop loss and/or take profit for a position via Telegram command.
     
-    This function updates the local positions state with new SL/TP values.
-    It is designed for the Telegram /sl, /tp, /tpsl commands.
+    This function creates SL/TP orders on the exchange. For live trading backends,
+    it will create STOP_MARKET and TAKE_PROFIT_MARKET orders on the exchange.
     
     Args:
         coin: Coin symbol (e.g., "BTC", "ETH").
@@ -848,9 +848,12 @@ def update_telegram_tpsl(
         TPSLUpdateResult with success status and old/new values.
     """
     from notifications.commands.tpsl import TPSLUpdateResult
+    from exchange.factory import get_exchange_client
+    from exchange.base import TPSLResult
     
-    # Try to sync local positions with live exchange snapshot if coin is missing
-    if coin not in positions:
+    # Get position info - first try local, then sync from exchange
+    pos = positions.get(coin)
+    if pos is None:
         try:
             snapshot = get_live_account_snapshot()
         except Exception as exc:
@@ -861,47 +864,131 @@ def update_telegram_tpsl(
             )
             snapshot = None
         
-        if isinstance(snapshot, dict):
-            raw_positions = snapshot.get("positions")
-            if isinstance(raw_positions, list):
-                live_positions = parse_live_positions(raw_positions)
-                live_pos = live_positions.get(coin)
-                if live_pos:
-                    positions[coin] = live_pos
-                    _core_state.positions[coin] = live_pos
+        if snapshot is not None:
+            # Handle both AccountSnapshot object and dict
+            if hasattr(snapshot, 'positions'):
+                for p in snapshot.positions:
+                    if p.coin.upper() == coin.upper():
+                        pos = {
+                            "side": p.side,
+                            "quantity": p.quantity,
+                            "stop_loss": p.stop_loss or 0,
+                            "profit_target": p.take_profit or 0,
+                        }
+                        positions[coin] = pos
+                        _core_state.positions[coin] = pos
+                        break
+            elif isinstance(snapshot, dict):
+                raw_positions = snapshot.get("positions")
+                if isinstance(raw_positions, list):
+                    live_positions = parse_live_positions(raw_positions)
+                    live_pos = live_positions.get(coin)
+                    if live_pos:
+                        pos = live_pos
+                        positions[coin] = live_pos
+                        _core_state.positions[coin] = live_pos
     
-    if coin not in positions:
+    if pos is None:
         return TPSLUpdateResult(
             success=False,
             error=f"无 {coin} 持仓",
         )
     
-    pos = positions[coin]
     old_sl = float(pos.get("stop_loss", 0) or 0)
     old_tp = float(pos.get("profit_target", 0) or 0)
+    side = str(pos.get("side", "")).lower()
+    quantity = float(pos.get("quantity", 0) or 0)
     
-    # Update SL if provided
-    if new_sl is not None:
-        positions[coin]["stop_loss"] = new_sl
-        _core_state.positions[coin]["stop_loss"] = new_sl
+    if quantity <= 0:
+        return TPSLUpdateResult(
+            success=False,
+            error=f"{coin} 持仓数量为 0",
+        )
     
-    # Update TP if provided
-    if new_tp is not None:
-        positions[coin]["profit_target"] = new_tp
-        _core_state.positions[coin]["profit_target"] = new_tp
-    
-    # Persist state
-    save_state()
-    
-    logging.info(
-        "Telegram TP/SL update: coin=%s | old_sl=%.4f | new_sl=%s | "
-        "old_tp=%.4f | new_tp=%s",
-        coin,
-        old_sl,
-        new_sl if new_sl is not None else "unchanged",
-        old_tp,
-        new_tp if new_tp is not None else "unchanged",
+    # Check if live trading is enabled
+    is_live = (
+        (TRADING_BACKEND == "binance_futures" and BINANCE_FUTURES_LIVE)
+        or (TRADING_BACKEND == "backpack_futures" and BACKPACK_FUTURES_LIVE)
+        or (TRADING_BACKEND == "hyperliquid" and hyperliquid_trader.is_live)
     )
+    
+    tpsl_result: Optional[TPSLResult] = None
+    
+    if is_live:
+        # Live trading - create SL/TP orders on exchange
+        logging.info(
+            "Telegram TP/SL update (live): coin=%s | side=%s | qty=%s | "
+            "new_sl=%s | new_tp=%s | backend=%s",
+            coin, side, quantity, new_sl, new_tp, TRADING_BACKEND,
+        )
+        
+        try:
+            if TRADING_BACKEND == "binance_futures":
+                exchange = get_binance_futures_exchange()
+                if exchange:
+                    client = get_exchange_client("binance_futures", exchange=exchange)
+                    tpsl_result = client.update_tpsl(
+                        coin=coin,
+                        side=side,
+                        quantity=quantity,
+                        new_sl=new_sl,
+                        new_tp=new_tp,
+                    )
+            elif TRADING_BACKEND == "backpack_futures":
+                client = get_exchange_client(
+                    "backpack_futures",
+                    api_public_key=BACKPACK_API_PUBLIC_KEY,
+                    api_secret_seed=BACKPACK_API_SECRET_SEED,
+                    base_url=BACKPACK_API_BASE_URL,
+                    window_ms=BACKPACK_API_WINDOW_MS,
+                )
+                tpsl_result = client.update_tpsl(
+                    coin=coin,
+                    side=side,
+                    quantity=quantity,
+                    new_sl=new_sl,
+                    new_tp=new_tp,
+                )
+            # Note: Hyperliquid TP/SL not implemented yet
+        except Exception as exc:
+            logging.error("Failed to create exchange TP/SL orders: %s", exc)
+            return TPSLUpdateResult(
+                success=False,
+                error=f"交易所 TP/SL 订单创建失败: {exc}",
+            )
+        
+        if tpsl_result is None or not tpsl_result.success:
+            error_msg = "交易所 TP/SL 订单创建失败"
+            if tpsl_result and tpsl_result.errors:
+                error_msg = "; ".join(tpsl_result.errors)
+            return TPSLUpdateResult(
+                success=False,
+                error=error_msg,
+            )
+    
+    # For paper trading or as backup, also update local state
+    # (This ensures the bot's local monitoring still works as fallback)
+    if not is_live:
+        logging.info(
+            "Telegram TP/SL update (paper): coin=%s | old_sl=%.4f | new_sl=%s | "
+            "old_tp=%.4f | new_tp=%s",
+            coin,
+            old_sl,
+            new_sl if new_sl is not None else "unchanged",
+            old_tp,
+            new_tp if new_tp is not None else "unchanged",
+        )
+        
+        # Update local state for paper trading
+        if new_sl is not None:
+            positions[coin]["stop_loss"] = new_sl
+            _core_state.positions[coin]["stop_loss"] = new_sl
+        
+        if new_tp is not None:
+            positions[coin]["profit_target"] = new_tp
+            _core_state.positions[coin]["profit_target"] = new_tp
+        
+        save_state()
     
     return TPSLUpdateResult(
         success=True,

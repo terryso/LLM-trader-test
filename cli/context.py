@@ -314,7 +314,7 @@ def build_cli_context() -> CLIContext:
         def execute_close(coin: str, side: str, quantity: float) -> Any:
             """Execute position close via exchange."""
             try:
-                return exchange_client.close_position(coin, side, quantity)
+                return exchange_client.close_position(coin, side, size=quantity)
             except Exception as e:
                 logging.error("Failed to execute close: %s", e)
                 return None
@@ -324,12 +324,54 @@ def build_cli_context() -> CLIContext:
             new_sl: Optional[float],
             new_tp: Optional[float],
         ) -> Any:
-            """Update TP/SL via exchange."""
+            """Update TP/SL via exchange.
+            
+            Note: This wrapper fetches position info to get side and quantity,
+            then calls the exchange client's update_tpsl method.
+            """
+            from notifications.commands.tpsl import TPSLUpdateResult
             try:
-                return exchange_client.update_tpsl(coin, new_sl, new_tp)
+                # Get position info to determine side and quantity
+                snapshot = _get_live_account_snapshot(exchange_client)
+                if snapshot is None:
+                    logging.error("Cannot update TP/SL: failed to get account snapshot")
+                    return TPSLUpdateResult(success=False, error="无法获取账户快照")
+                
+                # Find the position
+                position = None
+                for pos in snapshot.positions:
+                    if pos.coin.upper() == coin.upper():
+                        position = pos
+                        break
+                
+                if position is None:
+                    logging.error("Cannot update TP/SL: no position found for %s", coin)
+                    return None
+                
+                result = exchange_client.update_tpsl(
+                    coin=coin,
+                    side=position.side,
+                    quantity=position.quantity,
+                    new_sl=new_sl,
+                    new_tp=new_tp,
+                )
+                if isinstance(result, TPSLUpdateResult):
+                    return result
+                # Adapt TPSLResult -> TPSLUpdateResult for command handlers
+                errors = getattr(result, "errors", None)
+                error_text: Optional[str] = None
+                if isinstance(errors, list):
+                    if errors:
+                        error_text = "; ".join(str(e) for e in errors if e)
+                elif errors is not None:
+                    error_text = str(errors)
+                return TPSLUpdateResult(
+                    success=bool(getattr(result, "success", False)),
+                    error=error_text,
+                )
             except Exception as e:
                 logging.error("Failed to update TP/SL: %s", e)
-                return None
+                return TPSLUpdateResult(success=False, error=str(e))
         
         def get_current_price(coin: str) -> Optional[float]:
             """Get current price for a coin."""

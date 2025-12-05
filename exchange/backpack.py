@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 import requests
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from exchange.base import EntryResult, CloseResult, Position, AccountSnapshot
+from exchange.base import EntryResult, CloseResult, Position, AccountSnapshot, TPSLResult
 
 
 class BackpackFuturesExchangeClient:
@@ -492,6 +492,212 @@ class BackpackFuturesExchangeClient:
             return default if result != result else result  # NaN check
         except (TypeError, ValueError):
             return default
+
+    def get_current_price(self, coin: str) -> Optional[float]:
+        """Get current price for a coin.
+        
+        Args:
+            coin: Coin symbol (e.g., "BTC", "ETH")
+            
+        Returns:
+            Current price or None if unavailable.
+        """
+        symbol = self._coin_to_symbol(coin)
+        url = f"{self._base_url}/api/v1/ticker"
+        params = {"symbol": symbol}
+        
+        try:
+            response = self._session.get(url, params=params, timeout=self._timeout)
+            if response.status_code != 200:
+                return None
+            
+            data = response.json()
+            if isinstance(data, dict):
+                return self._safe_float(data.get("lastPrice"))
+            return None
+        except Exception as e:
+            logging.warning("Failed to get price for %s: %s", symbol, e)
+            return None
+
+    def update_tpsl(
+        self,
+        coin: str,
+        side: str,
+        quantity: float,
+        new_sl: Optional[float] = None,
+        new_tp: Optional[float] = None,
+    ) -> TPSLResult:
+        """Update stop loss and/or take profit for a position.
+        
+        Creates conditional orders on Backpack Futures for SL/TP.
+        First cancels any existing SL/TP orders for the position, then creates new ones.
+        
+        Args:
+            coin: Coin symbol (e.g., "BTC", "ETH").
+            side: Position side ("long" or "short").
+            quantity: Position quantity for the SL/TP orders.
+            new_sl: New stop loss price, or None to skip.
+            new_tp: New take profit price, or None to skip.
+            
+        Returns:
+            TPSLResult with success status and order IDs.
+        """
+        symbol = self._coin_to_symbol(coin)
+        errors: List[str] = []
+        sl_order_id = None
+        tp_order_id = None
+        raw_results: Dict[str, Any] = {}
+        
+        if new_sl is None and new_tp is None:
+            return TPSLResult(
+                success=True,
+                backend="backpack_futures",
+                errors=[],
+                raw={"reason": "no SL/TP values provided"},
+            )
+        
+        # Determine order side (opposite of position side for closing)
+        # Backpack uses "Bid" for buy, "Ask" for sell
+        close_side = "Ask" if side.lower() == "long" else "Bid"
+        
+        # Cancel existing SL/TP orders first
+        try:
+            self._cancel_existing_tpsl_orders(symbol)
+        except Exception as e:
+            logging.warning("Failed to cancel existing TP/SL orders for %s: %s", symbol, e)
+        
+        quantity_str = self._format_quantity(symbol, quantity)
+        
+        # Create Stop Loss order (conditional order with SL trigger)
+        if new_sl is not None and new_sl > 0:
+            try:
+                sl_body: Dict[str, Any] = {
+                    "symbol": symbol,
+                    "side": close_side,
+                    "orderType": "Market",
+                    "quantity": quantity_str,
+                    "reduceOnly": True,
+                    # Use dedicated Backpack stop loss trigger fields instead of generic triggerPrice
+                    "stopLossTriggerPrice": str(new_sl),
+                    "stopLossTriggerBy": "LastPrice",
+                }
+                sl_raw = self._post_order(sl_body)
+                sl_errors = self._collect_order_errors(sl_raw, "SL")
+                if not sl_errors:
+                    sl_order_id = sl_raw.get("id")
+                    raw_results["sl_order"] = sl_raw
+                    logging.info(
+                        "Backpack SL order created: %s %s @ %s, order_id=%s",
+                        symbol, close_side, new_sl, sl_order_id,
+                    )
+                else:
+                    errors.extend(sl_errors)
+            except Exception as e:
+                error_msg = f"SL order failed: {e}"
+                errors.append(error_msg)
+                logging.error("Backpack %s: %s", symbol, error_msg)
+        
+        # Create Take Profit order (conditional order with TP trigger)
+        if new_tp is not None and new_tp > 0:
+            try:
+                tp_body: Dict[str, Any] = {
+                    "symbol": symbol,
+                    "side": close_side,
+                    "orderType": "Market",
+                    "quantity": quantity_str,
+                    "reduceOnly": True,
+                    # Use dedicated Backpack take profit trigger fields instead of generic triggerPrice
+                    "takeProfitTriggerPrice": str(new_tp),
+                    "takeProfitTriggerBy": "LastPrice",
+                }
+                tp_raw = self._post_order(tp_body)
+                tp_errors = self._collect_order_errors(tp_raw, "TP")
+                if not tp_errors:
+                    tp_order_id = tp_raw.get("id")
+                    raw_results["tp_order"] = tp_raw
+                    logging.info(
+                        "Backpack TP order created: %s %s @ %s, order_id=%s",
+                        symbol, close_side, new_tp, tp_order_id,
+                    )
+                else:
+                    errors.extend(tp_errors)
+            except Exception as e:
+                error_msg = f"TP order failed: {e}"
+                errors.append(error_msg)
+                logging.error("Backpack %s: %s", symbol, error_msg)
+        
+        # Success if at least one order was created without errors
+        success = (
+            (new_sl is None or sl_order_id is not None) and
+            (new_tp is None or tp_order_id is not None)
+        )
+        
+        return TPSLResult(
+            success=success,
+            backend="backpack_futures",
+            errors=errors,
+            sl_order_id=sl_order_id,
+            tp_order_id=tp_order_id,
+            raw=raw_results,
+        )
+
+    def _cancel_existing_tpsl_orders(self, symbol: str) -> None:
+        """Cancel existing conditional (SL/TP) orders for a symbol."""
+        instruction = "orderQueryAll"
+        params: Dict[str, Any] = {"symbol": symbol}
+        headers = self._sign(instruction, params)
+        url = f"{self._base_url}/api/v1/orders"
+        
+        try:
+            response = self._session.get(
+                url,
+                headers=headers,
+                params=params,
+                timeout=self._timeout,
+            )
+            if response.status_code != 200:
+                return
+            
+            orders = response.json()
+            if not isinstance(orders, list):
+                return
+            
+            for order in orders:
+                if not isinstance(order, dict):
+                    continue
+                # Cancel reduce-only conditional orders (TP/SL)
+                has_trigger = (
+                    order.get("triggerPrice")
+                    or order.get("stopLossTriggerPrice")
+                    or order.get("takeProfitTriggerPrice")
+                )
+                if has_trigger and order.get("reduceOnly"):
+                    order_id = order.get("id")
+                    if order_id:
+                        self._cancel_order(symbol, order_id)
+                        logging.debug("Cancelled existing conditional order %s", order_id)
+        except Exception as e:
+            logging.warning("Error fetching/cancelling existing TP/SL orders: %s", e)
+
+    def _cancel_order(self, symbol: str, order_id: str) -> None:
+        """Cancel a specific order."""
+        instruction = "orderCancel"
+        body: Dict[str, Any] = {
+            "symbol": symbol,
+            "orderId": order_id,
+        }
+        headers = self._sign(instruction, body)
+        url = f"{self._base_url}/api/v1/order"
+        
+        try:
+            self._session.delete(
+                url,
+                headers=headers,
+                json=body,
+                timeout=self._timeout,
+            )
+        except Exception as e:
+            logging.warning("Failed to cancel order %s: %s", order_id, e)
 
     def _get_collateral(self) -> Optional[Dict[str, Any]]:
         """Fetch collateral information from Backpack API.

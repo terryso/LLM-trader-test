@@ -48,6 +48,26 @@ class CloseResult:
 
 
 @dataclass(slots=True)
+class TPSLResult:
+    """统一的 TP/SL 更新结果结构。
+    
+    Attributes:
+        success: 是否成功设置 TP/SL。
+        backend: 后端标识。
+        errors: 错误信息列表。
+        sl_order_id: 止损订单 ID（如有）。
+        tp_order_id: 止盈订单 ID（如有）。
+        raw: 原始响应数据。
+    """
+    success: bool
+    backend: str
+    errors: List[str] = field(default_factory=list)
+    sl_order_id: Optional[Any] = None
+    tp_order_id: Optional[Any] = None
+    raw: Optional[Any] = None
+
+
+@dataclass(slots=True)
 class Position:
     """标准化的持仓数据结构。
     
