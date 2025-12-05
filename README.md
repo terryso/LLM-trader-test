@@ -20,7 +20,7 @@
 下图为在 Backpack USDC 永续合约上刷量约 7 天的实测效果：第四季度第二周获得518积分 累计成交额约 **40 万 USDC**，整体亏损约 **50 USDC**（主要来自手续费和点差，实际盈亏仍取决于市场波动和具体策略）。
 
 <p align="center">
-  <img src="https://i.v2ex.co/Vxe2eQv7.png" alt="Backpack 刷量效果示例" width="520" />
+  <img src="https://i.v2ex.co/Vxe2eQv7.png" alt="Backpack 刷量效果示例"  />
 </p>
 
 > 上图仅为历史示例，不代表任何未来收益承诺，请务必结合自身风险偏好谨慎使用。
